@@ -1,12 +1,13 @@
 agent-ubuntu: ubuntu-24.04
 build-image:
   # Authoritative configuration for build image/s
-  repo: envoyproxy/envoy-build-ubuntu
-  sha: 63598080c3cccb6d7c9f3eeaa16fffd72f13f4c799d08ef891cd3f02978b6284
-  mobile-sha: 67fa99e90cbc9a238ff7ad558993d68732a4ab59d3ef8d95b8e4373e24ea390b
-  # this is authoritative, but is not currently used in github ci
-  gcr-sha: b4bc62cde8bc10ebc7e91e93fcf92e6e0737b705363478bfd14d86c92d80db2c
-  tag: 506aa20d3a216fa2f5677c1f13d2b1656b000b86
+  repo: docker.io/envoyproxy/envoy-build-ubuntu
+  repo-gcr: gcr.io/envoy-ci/envoy-build
+  sha: de54e91a8d27623ffbd3fb9bd1aba8241567e41c0fb82b167128e3629c2ede18
+  sha-mobile: c0e11c4adaf7c7eec1e3bdc5f598e09ce5e5d5c355f161df8d75f0a10504f6ff
+  # TODO: remove this dupe (currently used by ci request handler)
+  mobile-sha: c0e11c4adaf7c7eec1e3bdc5f598e09ce5e5d5c355f161df8d75f0a10504f6ff
+  tag: 4ce0cb04f941fb89d475597a640176ae64070bb1
 
 config:
   envoy:
@@ -28,6 +29,7 @@ checks:
     on-run:
     - check-build
     - check-coverage
+    - check-runtime
     - check-san
     required: true
   macos:
@@ -146,7 +148,7 @@ checks:
     name: >-
       Envoy/Publish and verify
     on-run:
-    - publish
+    - release
     - verify
     required: true
 
@@ -170,6 +172,12 @@ run:
   check-coverage:
     paths:
     - "**/*"
+  check-runtime:
+    paths:
+    - source/server/cgroup_cpu_util.*
+    - test/server/*cgroup*
+    # this can be switched to always run once related ci lands.
+    push: paths
   check-san:
     paths:
     - "**/*"
@@ -182,6 +190,7 @@ run:
     - bazel/repository_locations.bzl
     - mobile/.bazelrc
     - mobile/**/*
+    - source/common/**/*
     - tools/code_format/check_format.py
   mobile-android-all:
     paths:
@@ -192,6 +201,7 @@ run:
     - bazel/repository_locations.bzl
     - mobile/.bazelrc
     - mobile/**/*
+    - source/common/**/*
     - tools/code_format/check_format.py
     push: never
   mobile-android-tests:
@@ -239,7 +249,9 @@ run:
     - bazel/repository_locations.bzl
     - mobile/.bazelrc
     - mobile/**/*
+    - test/run_envoy_bazel_coverage.sh
     - tools/code_format/check_format.py
+    - tools/coverage/**/*
   mobile-format:
     paths:
     - .bazelrc
@@ -259,6 +271,7 @@ run:
     - bazel/repository_locations.bzl
     - mobile/.bazelrc
     - mobile/**/*
+    - source/common/**/*
     - tools/code_format/check_format.py
   mobile-ios-all:
     paths:
@@ -269,6 +282,7 @@ run:
     - bazel/repository_locations.bzl
     - mobile/.bazelrc
     - mobile/**/*
+    - source/common/**/*
     - tools/code_format/check_format.py
     push: never
   mobile-ios-tests:
@@ -330,7 +344,7 @@ run:
   precheck-publish:
     paths:
     - "**/*"
-  publish:
+  release:
     paths:
     - .bazelrc
     - .bazelversion
@@ -339,6 +353,7 @@ run:
     - bazel/**/*
     - ci/**/*
     - contrib/**/*
+    - distribution/**/*
     - envoy/**/*
     - examples/**/*
     - source/**/*
@@ -353,6 +368,7 @@ run:
     - bazel/**/*
     - ci/**/*
     - contrib/**/*
+    - distribution/**/*
     - envoy/**/*
     - examples/**/*
     - source/**/*

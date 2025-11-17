@@ -4,6 +4,7 @@ load("@envoy_api//bazel:repository_locations.bzl", API_REPOSITORY_LOCATIONS_SPEC
 load("@envoy_api//bazel:repository_locations_utils.bzl", "load_repository_locations_spec", "merge_dicts")
 load("@envoy_toolshed//:macros.bzl", "json_data")
 load("@envoy_toolshed//dependency:macros.bzl", "updater")
+load("@rules_cc//cc:defs.bzl", "cc_library")
 load("//bazel:envoy_build_system.bzl", "envoy_package")
 load("//bazel:envoy_internal.bzl", "envoy_select_force_libcpp")
 load(":repository_locations.bzl", "REPOSITORY_LOCATIONS_SPEC")
@@ -65,17 +66,6 @@ genrule(
     # Undocumented attr to depend on workspace status files.
     # https://github.com/bazelbuild/bazel/issues/4942
     stamp = 1,
-)
-
-# A target to optionally link C++ standard library dynamically in sanitizer runs.
-# TSAN doesn't support libc/libstdc++ static linking per doc:
-#   http://releases.llvm.org/8.0.1/tools/clang/docs/ThreadSanitizer.html
-cc_library(
-    name = "dynamic_stdlib",
-    linkopts = envoy_select_force_libcpp(
-        ["-lc++"],
-        ["-lstdc++"],
-    ),
 )
 
 cc_library(
@@ -198,34 +188,10 @@ config_setting(
 )
 
 config_setting(
-    name = "gcc_build_gcc",
+    name = "gcc_build",
     flag_values = {
         "@bazel_tools//tools/cpp:compiler": "gcc",
     },
-)
-
-# This is needed due to a Bazel bug (https://github.com/bazelbuild/bazel/issues/12707)
-config_setting(
-    name = "gcc_build_compiler",
-    flag_values = {
-        "@bazel_tools//tools/cpp:compiler": "compiler",
-    },
-)
-
-selects.config_setting_group(
-    name = "gcc_build_compiler_on_linux",
-    match_all = [
-        ":gcc_build_compiler",
-        ":linux",
-    ],
-)
-
-selects.config_setting_group(
-    name = "gcc_build",
-    match_any = [
-        ":gcc_build_gcc",
-        ":gcc_build_compiler_on_linux",
-    ],
 )
 
 config_setting(
@@ -298,7 +264,6 @@ selects.config_setting_group(
     name = "disable_http3",
     match_any = [
         ":disable_http3_setting",
-        ":boringssl_fips",
     ],
 )
 
@@ -361,6 +326,14 @@ config_setting(
 )
 
 selects.config_setting_group(
+    name = "http3_enabled_and_linux",
+    match_all = [
+        "//bazel:linux",
+        "//bazel:enable_http3",
+    ],
+)
+
+selects.config_setting_group(
     name = "enable_http3_on_linux_ppc",
     match_all = [
         ":enable_http3",
@@ -392,6 +365,11 @@ config_setting(
 config_setting(
     name = "disable_static_extension_registration",
     values = {"define": "static_extension_registration=disabled"},
+)
+
+config_setting(
+    name = "disable_envoy_mobile_xds",
+    values = {"define": "envoy_mobile_xds=disabled"},
 )
 
 config_setting(
@@ -535,6 +513,14 @@ selects.config_setting_group(
     ],
 )
 
+selects.config_setting_group(
+    name = "boringssl_fips_not_ppc",
+    match_all = [
+        ":boringssl_fips",
+        ":not_ppc",
+    ],
+)
+
 config_setting(
     name = "zlib_ng",
     constraint_values = [
@@ -581,7 +567,7 @@ alias(
     name = "boringssl",
     actual = select({
         "//bazel:boringssl_fips_ppc": "@aws_lc//:ssl",
-        "//bazel:boringssl_fips_x86": "@boringssl_fips//:ssl",
+        "//bazel:boringssl_fips_not_ppc": "@boringssl_fips//:ssl",
         "//conditions:default": "@boringssl//:ssl",
     }),
 )
@@ -590,7 +576,7 @@ alias(
     name = "boringcrypto",
     actual = select({
         "//bazel:boringssl_fips_ppc": "@aws_lc//:crypto",
-        "//bazel:boringssl_fips_x86": "@boringssl_fips//:crypto",
+        "//bazel:boringssl_fips_not_ppc": "@boringssl_fips//:crypto",
         "//conditions:default": "@boringssl//:crypto",
     }),
 )
@@ -770,6 +756,22 @@ config_setting(
 )
 
 selects.config_setting_group(
+    name = "engflow_rbe_x86_64",
+    match_all = [
+        ":engflow_rbe",
+        ":linux_x86_64",
+    ],
+)
+
+selects.config_setting_group(
+    name = "engflow_rbe_aarch64",
+    match_all = [
+        ":engflow_rbe",
+        ":linux_aarch64",
+    ],
+)
+
+selects.config_setting_group(
     name = "apple",
     match_any = [
         ":darwin",
@@ -849,6 +851,14 @@ selects.config_setting_group(
         ":linux_aarch64",
         ":linux_mips64",
         ":linux_s390x",
+    ],
+)
+
+selects.config_setting_group(
+    name = "not_ppc",
+    match_any = [
+        ":not_x86_ppc",
+        ":x86",
     ],
 )
 
@@ -1033,4 +1043,43 @@ cc_library(
         ): ["@com_github_google_tcmalloc//tcmalloc"],
         "//conditions:default": ["//bazel/foreign_cc:gperftools"],
     }),
+)
+
+bool_flag(
+    name = "enable_liburing",
+    build_setting_default = True,
+)
+
+config_setting(
+    name = "liburing_enabled",
+    constraint_values = [
+        "@platforms//os:linux",
+    ],
+    flag_values = {
+        ":enable_liburing": "True",
+    },
+)
+
+bool_flag(
+    name = "libc++",
+    build_setting_default = False,
+)
+
+config_setting(
+    name = "libc++_enabled",
+    flag_values = {
+        ":libc++": "True",
+    },
+)
+
+bool_flag(
+    name = "libstdc++",
+    build_setting_default = False,
+)
+
+config_setting(
+    name = "libstdc++_enabled",
+    flag_values = {
+        ":libstdc++": "True",
+    },
 )

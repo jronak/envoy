@@ -10,6 +10,7 @@
 #include "envoy/event/timer.h"
 #include "envoy/extensions/filters/network/tcp_proxy/v3/tcp_proxy.pb.h"
 #include "envoy/extensions/filters/network/tcp_proxy/v3/tcp_proxy.pb.validate.h"
+#include "envoy/extensions/request_id/uuid/v3/uuid.pb.h"
 #include "envoy/registry/registry.h"
 #include "envoy/stats/scope.h"
 #include "envoy/stream_info/bool_accessor.h"
@@ -26,6 +27,7 @@
 #include "source/common/config/metadata.h"
 #include "source/common/config/utility.h"
 #include "source/common/config/well_known_names.h"
+#include "source/common/http/request_id_extension_impl.h"
 #include "source/common/network/application_protocol.h"
 #include "source/common/network/proxy_protocol_filter_state.h"
 #include "source/common/network/socket_option_factory.h"
@@ -132,6 +134,10 @@ Config::SharedConfig::SharedConfig(
         DurationUtil::durationToMilliseconds(config.max_downstream_connection_duration());
     max_downstream_connection_duration_ = std::chrono::milliseconds(connection_duration);
   }
+  if (config.has_max_downstream_connection_duration_jitter_percentage()) {
+    max_downstream_connection_duration_jitter_percentage_ =
+        config.max_downstream_connection_duration_jitter_percentage().value();
+  }
 
   if (config.has_access_log_options()) {
     if (config.flush_access_log_on_connected() /* deprecated */) {
@@ -179,6 +185,11 @@ Config::SharedConfig::SharedConfig(
 
     backoff_strategy_ = std::make_unique<JitteredExponentialBackOffStrategy>(
         base_interval_ms, max_interval_ms, context.serverFactoryContext().api().randomGenerator());
+  }
+
+  if (!config.proxy_protocol_tlvs().empty()) {
+    proxy_protocol_tlvs_ =
+        parseTLVs(config.proxy_protocol_tlvs(), context, dynamic_tlv_formatters_);
   }
 }
 
@@ -256,6 +267,31 @@ RouteConstSharedPtr Config::getRouteFromEntries(Network::Connection& connection)
                                           random_generator_.random(), false);
 }
 
+const absl::optional<std::chrono::milliseconds>
+Config::calculateMaxDownstreamConnectionDurationWithJitter() {
+  const auto& max_downstream_connection_duration = maxDownstreamConnectionDuration();
+  if (!max_downstream_connection_duration) {
+    return max_downstream_connection_duration;
+  }
+
+  const auto& jitter_percentage = maxDownstreamConnectionDurationJitterPercentage();
+  if (!jitter_percentage) {
+    return max_downstream_connection_duration;
+  }
+
+  // Apply jitter: base_duration * (1 + random(0, jitter_factor));
+  const uint64_t max_jitter_ms = std::ceil(max_downstream_connection_duration.value().count() *
+                                           (jitter_percentage.value() / 100.0));
+
+  if (max_jitter_ms == 0) {
+    return max_downstream_connection_duration;
+  }
+
+  const uint64_t jitter_ms = randomGenerator().random() % max_jitter_ms;
+  return std::chrono::milliseconds(
+      static_cast<uint64_t>(max_downstream_connection_duration.value().count() + jitter_ms));
+}
+
 UpstreamDrainManager& Config::drainManager() {
   return upstream_drain_manager_slot_->getTyped<UpstreamDrainManager>();
 }
@@ -283,6 +319,65 @@ Filter::~Filter() {
 
 TcpProxyStats Config::SharedConfig::generateStats(Stats::Scope& scope) {
   return {ALL_TCP_PROXY_STATS(POOL_COUNTER(scope), POOL_GAUGE(scope))};
+}
+
+Network::ProxyProtocolTLVVector
+Config::SharedConfig::parseTLVs(absl::Span<const envoy::config::core::v3::TlvEntry* const> tlvs,
+                                Server::Configuration::GenericFactoryContext& context,
+                                std::vector<TlvFormatter>& dynamic_tlvs) {
+  Network::ProxyProtocolTLVVector tlv_vector;
+  for (const auto& tlv : tlvs) {
+    const uint8_t tlv_type = static_cast<uint8_t>(tlv->type());
+
+    // Validate that only one of value or format_string is set.
+    const bool has_value = !tlv->value().empty();
+    const bool has_format_string = tlv->has_format_string();
+
+    if (has_value && has_format_string) {
+      throw EnvoyException(
+          "Invalid TLV configuration: only one of 'value' or 'format_string' may be set.");
+    }
+
+    if (!has_value && !has_format_string) {
+      throw EnvoyException(
+          "Invalid TLV configuration: one of 'value' or 'format_string' must be set.");
+    }
+
+    if (has_value) {
+      // Static TLV value must be at least one byte long.
+      if (tlv->value().size() < 1) {
+        throw EnvoyException("Invalid TLV configuration: 'value' must be at least one byte long.");
+      }
+      tlv_vector.push_back(
+          {tlv_type, std::vector<unsigned char>(tlv->value().begin(), tlv->value().end())});
+    } else {
+      // Dynamic TLV value using formatter.
+      auto formatter_or_error =
+          Formatter::SubstitutionFormatStringUtils::fromProtoConfig(tlv->format_string(), context);
+      if (!formatter_or_error.ok()) {
+        throw EnvoyException(absl::StrCat("Failed to parse TLV format string: ",
+                                          formatter_or_error.status().ToString()));
+      }
+      dynamic_tlvs.push_back({tlv_type, std::move(*formatter_or_error)});
+    }
+  }
+  return tlv_vector;
+}
+
+Network::ProxyProtocolTLVVector
+Config::SharedConfig::evaluateDynamicTLVs(const StreamInfo::StreamInfo& stream_info) const {
+  Network::ProxyProtocolTLVVector result = proxy_protocol_tlvs_;
+
+  // Evaluate dynamic TLV formatters.
+  for (const auto& tlv_formatter : dynamic_tlv_formatters_) {
+    const std::string formatted_value = tlv_formatter.formatter->format({}, stream_info);
+
+    // Convert formatted string to bytes and add to result.
+    result.push_back({tlv_formatter.type,
+                      std::vector<unsigned char>(formatted_value.begin(), formatted_value.end())});
+  }
+
+  return result;
 }
 
 void Filter::initializeReadFilterCallbacks(Network::ReadFilterCallbacks& callbacks) {
@@ -422,8 +517,10 @@ void Filter::UpstreamCallbacks::onEvent(Network::ConnectionEvent event) {
 }
 
 void Filter::UpstreamCallbacks::onAboveWriteBufferHighWatermark() {
+  // In case when upstream connection is draining `parent_` will be set to nullptr.
   // TCP Tunneling may call on high/low watermark multiple times.
-  ASSERT(parent_->config_->tunnelingConfigHelper() || !on_high_watermark_called_);
+  ASSERT(parent_ == nullptr || parent_->config_->tunnelingConfigHelper() ||
+         !on_high_watermark_called_);
   on_high_watermark_called_ = true;
 
   if (parent_ != nullptr) {
@@ -433,8 +530,10 @@ void Filter::UpstreamCallbacks::onAboveWriteBufferHighWatermark() {
 }
 
 void Filter::UpstreamCallbacks::onBelowWriteBufferLowWatermark() {
+  // In case when upstream connection is draining `parent_` will be set to nullptr.
   // TCP Tunneling may call on high/low watermark multiple times.
-  ASSERT(parent_->config_->tunnelingConfigHelper() || on_high_watermark_called_);
+  ASSERT(parent_ == nullptr || parent_->config_->tunnelingConfigHelper() ||
+         on_high_watermark_called_);
   on_high_watermark_called_ = false;
 
   if (parent_ != nullptr) {
@@ -519,27 +618,17 @@ Network::FilterStatus Filter::establishUpstreamConnection() {
     return Network::FilterStatus::StopIteration;
   }
 
-  if (!config_->backoffStrategy() &&
-      !Runtime::runtimeFeatureEnabled(
-          "envoy.reloadable_features.tcp_proxy_retry_on_different_event_loop")) {
-    const uint32_t max_connect_attempts = config_->maxConnectAttempts();
-    if (connect_attempts_ >= max_connect_attempts) {
-      getStreamInfo().setResponseFlag(StreamInfo::CoreResponseFlag::UpstreamRetryLimitExceeded);
-      cluster->trafficStats()->upstream_cx_connect_attempts_exceeded_.inc();
-      onInitFailure(UpstreamFailureReason::ConnectFailed);
-      return Network::FilterStatus::StopIteration;
-    }
-  }
-
   auto& downstream_connection = read_callbacks_->connection();
   auto& filter_state = downstream_connection.streamInfo().filterState();
   if (!filter_state->hasData<Network::ProxyProtocolFilterState>(
           Network::ProxyProtocolFilterState::key())) {
+    // Evaluate dynamic TLVs with the connection's stream info.
+    const auto tlvs = config_->sharedConfig()->evaluateDynamicTLVs(getStreamInfo());
     filter_state->setData(
         Network::ProxyProtocolFilterState::key(),
         std::make_shared<Network::ProxyProtocolFilterState>(Network::ProxyProtocolData{
             downstream_connection.connectionInfoProvider().remoteAddress(),
-            downstream_connection.connectionInfoProvider().localAddress()}),
+            downstream_connection.connectionInfoProvider().localAddress(), tlvs}),
         StreamInfo::FilterState::StateType::ReadOnly,
         StreamInfo::FilterState::LifeSpan::Connection);
   }
@@ -616,10 +705,9 @@ bool Filter::maybeTunnel(Upstream::ThreadLocalCluster& cluster) {
           "envoy.restart_features.upstream_http_filters_with_tcp_proxy")) {
     // TODO(vikaschoudhary16): Initialize route_ once per cluster.
     upstream_decoder_filter_callbacks_.route_ = THROW_OR_RETURN_VALUE(
-        Http::NullRouteImpl::create(
-            cluster.info()->name(),
-            *std::unique_ptr<const Router::RetryPolicy>{new Router::RetryPolicyImpl()},
-            config_->regexEngine()),
+        Http::NullRouteImpl::create(cluster.info()->name(),
+                                    Router::RetryPolicyImpl::DefaultRetryPolicy,
+                                    config_->regexEngine()),
         std::unique_ptr<Http::NullRouteImpl>);
   }
   Upstream::HostConstSharedPtr host =
@@ -736,8 +824,7 @@ TunnelingConfigHelperImpl::TunnelingConfigHelperImpl(
     Stats::Scope& stats_scope,
     const envoy::extensions::filters::network::tcp_proxy::v3::TcpProxy& config_message,
     Server::Configuration::FactoryContext& context)
-    : use_post_(config_message.tunneling_config().use_post()),
-      header_parser_(THROW_OR_RETURN_VALUE(Envoy::Router::HeaderParser::configure(
+    : header_parser_(THROW_OR_RETURN_VALUE(Envoy::Router::HeaderParser::configure(
                                                config_message.tunneling_config().headers_to_add()),
                                            Router::HeaderParserPtr)),
       propagate_response_headers_(config_message.tunneling_config().propagate_response_headers()),
@@ -747,8 +834,7 @@ TunnelingConfigHelperImpl::TunnelingConfigHelperImpl(
       // TODO(vikaschoudhary16): figure out which of the following router_config_ members are
       // not required by tcp_proxy and move them to a different class
       router_config_(context.serverFactoryContext(), route_stat_name_storage_.statName(),
-                     context.serverFactoryContext().localInfo(), stats_scope,
-                     context.serverFactoryContext().clusterManager(),
+                     stats_scope, context.serverFactoryContext().clusterManager(),
                      context.serverFactoryContext().runtime(),
                      context.serverFactoryContext().api().randomGenerator(),
                      std::make_unique<Router::ShadowWriterImpl>(
@@ -758,10 +844,12 @@ TunnelingConfigHelperImpl::TunnelingConfigHelperImpl(
                      context.serverFactoryContext().httpContext(),
                      context.serverFactoryContext().routerContext()),
       server_factory_context_(context.serverFactoryContext()) {
-  if (!post_path_.empty() && !use_post_) {
+  if (!post_path_.empty() && !config_message.tunneling_config().use_post()) {
     throw EnvoyException("Can't set a post path when POST method isn't used");
   }
-  post_path_ = post_path_.empty() ? "/" : post_path_;
+  if (config_message.tunneling_config().use_post()) {
+    post_path_ = post_path_.empty() ? "/" : post_path_;
+  }
 
   envoy::config::core::v3::SubstitutionFormatString substitution_format_config;
   substitution_format_config.mutable_text_format_source()->set_inline_string(
@@ -769,10 +857,29 @@ TunnelingConfigHelperImpl::TunnelingConfigHelperImpl(
   hostname_fmt_ = THROW_OR_RETURN_VALUE(Formatter::SubstitutionFormatStringUtils::fromProtoConfig(
                                             substitution_format_config, context),
                                         Formatter::FormatterPtr);
+
+  // Initialize request ID extension if explicitly configured.
+  const auto& rid_config = config_message.tunneling_config().request_id_extension();
+  if (rid_config.has_typed_config()) {
+    auto extension_or_error = Http::RequestIDExtensionFactory::fromProto(rid_config, context);
+    if (!extension_or_error.ok()) {
+      throw EnvoyException(absl::StrCat("Failed to create request ID extension: ",
+                                        extension_or_error.status().ToString()));
+    }
+    request_id_extension_ = extension_or_error.value();
+  }
+
+  // Populate optional request ID customization fields if provided.
+  if (!config_message.tunneling_config().request_id_header().empty()) {
+    request_id_header_ = config_message.tunneling_config().request_id_header();
+  }
+  if (!config_message.tunneling_config().request_id_metadata_key().empty()) {
+    request_id_metadata_key_ = config_message.tunneling_config().request_id_metadata_key();
+  }
 }
 
 std::string TunnelingConfigHelperImpl::host(const StreamInfo::StreamInfo& stream_info) const {
-  return hostname_fmt_->formatWithContext({}, stream_info);
+  return hostname_fmt_->format({}, stream_info);
 }
 
 void TunnelingConfigHelperImpl::propagateResponseHeaders(
@@ -844,16 +951,41 @@ Network::FilterStatus Filter::onData(Buffer::Instance& data, bool end_stream) {
 }
 
 Network::FilterStatus Filter::onNewConnection() {
-  if (config_->maxDownstreamConnectionDuration()) {
+  const auto& max_downstream_connection_duration =
+      config_->calculateMaxDownstreamConnectionDurationWithJitter();
+  if (max_downstream_connection_duration) {
     connection_duration_timer_ = read_callbacks_->connection().dispatcher().createTimer(
         [this]() -> void { onMaxDownstreamConnectionDuration(); });
-    connection_duration_timer_->enableTimer(config_->maxDownstreamConnectionDuration().value());
+    connection_duration_timer_->enableTimer(max_downstream_connection_duration.value());
   }
 
   if (config_->accessLogFlushInterval().has_value()) {
     access_log_flush_timer_ = read_callbacks_->connection().dispatcher().createTimer(
         [this]() -> void { onAccessLogFlushInterval(); });
     resetAccessLogFlushTimer();
+  }
+
+  idle_timeout_ = config_->idleTimeout();
+  if (const auto* per_connection_idle_timeout =
+          getStreamInfo().filterState()->getDataReadOnly<StreamInfo::UInt64Accessor>(
+              PerConnectionIdleTimeoutMs);
+      per_connection_idle_timeout != nullptr) {
+    idle_timeout_ = std::chrono::milliseconds(per_connection_idle_timeout->value());
+  }
+
+  if (idle_timeout_) {
+    // The idle_timer_ can be moved to a Drainer, so related callbacks call into
+    // the UpstreamCallbacks, which has the same lifetime as the timer, and can dispatch
+    // the call to either TcpProxy or to Drainer, depending on the current state.
+    idle_timer_ = read_callbacks_->connection().dispatcher().createTimer(
+        [upstream_callbacks = upstream_callbacks_]() { upstream_callbacks->onIdleTimeout(); });
+
+    if (Runtime::runtimeFeatureEnabled(
+            "envoy.reloadable_features.tcp_proxy_set_idle_timer_immediately_on_new_connection")) {
+      // Start the idle timer immediately so that if no response is received from the upstream,
+      // the downstream connection will time out.
+      resetIdleTimer();
+    }
   }
 
   // Set UUID for the connection. This is used for logging and tracing.
@@ -949,13 +1081,7 @@ void Filter::onUpstreamEvent(Network::ConnectionEvent event) {
         }
       }
       if (!downstream_closed_) {
-        if (!config_->backoffStrategy() &&
-            !Runtime::runtimeFeatureEnabled(
-                "envoy.reloadable_features.tcp_proxy_retry_on_different_event_loop")) {
-          onRetryTimer();
-          return;
-        }
-
+        // Always defer retry to a different event loop iteration via the retry timer.
         if (connect_attempts_ >= config_->maxConnectAttempts()) {
           onConnectMaxAttempts();
           return;
@@ -1013,20 +1139,7 @@ void Filter::onUpstreamConnection() {
                  read_callbacks_->connection(),
                  getStreamInfo().downstreamAddressProvider().requestedServerName());
 
-  idle_timeout_ = config_->idleTimeout();
-  if (const auto* per_connection_idle_timeout =
-          getStreamInfo().filterState()->getDataReadOnly<StreamInfo::UInt64Accessor>(
-              PerConnectionIdleTimeoutMs);
-      per_connection_idle_timeout != nullptr) {
-    idle_timeout_ = std::chrono::milliseconds(per_connection_idle_timeout->value());
-  }
-
   if (idle_timeout_) {
-    // The idle_timer_ can be moved to a Drainer, so related callbacks call into
-    // the UpstreamCallbacks, which has the same lifetime as the timer, and can dispatch
-    // the call to either TcpProxy or to Drainer, depending on the current state.
-    idle_timer_ = read_callbacks_->connection().dispatcher().createTimer(
-        [upstream_callbacks = upstream_callbacks_]() { upstream_callbacks->onIdleTimeout(); });
     resetIdleTimer();
     read_callbacks_->connection().addBytesSentCallback([this](uint64_t) {
       resetIdleTimer();
@@ -1074,7 +1187,7 @@ void Filter::onAccessLogFlushInterval() {
 }
 
 void Filter::flushAccessLog(AccessLog::AccessLogType access_log_type) {
-  const Formatter::HttpFormatterContext log_context{nullptr, nullptr, nullptr, {}, access_log_type};
+  const Formatter::Context log_context{nullptr, nullptr, nullptr, {}, access_log_type};
 
   for (const auto& access_log : config_->accessLogs()) {
     access_log->log(log_context, getStreamInfo());

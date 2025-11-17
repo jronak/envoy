@@ -1,8 +1,9 @@
-load("@rules_fuzzing//fuzzing:cc_defs.bzl", "fuzzing_decoration")
-
 # DO NOT LOAD THIS FILE. Load envoy_build_system.bzl instead.
 # Envoy test targets. This includes both test library and test binary targets.
+load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
+load("@rules_fuzzing//fuzzing:cc_defs.bzl", "fuzzing_decoration")
 load("@rules_python//python:defs.bzl", "py_binary", "py_test")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load(":envoy_binary.bzl", "envoy_cc_binary")
 load(
     ":envoy_internal.bzl",
@@ -45,7 +46,7 @@ def _envoy_cc_test_infrastructure_library(
         extra_deps = envoy_pch_deps(repository, "//test:test_pch")
         pch_copts = envoy_pch_copts(repository, "//test:test_pch")
 
-    native.cc_library(
+    cc_library(
         name = name,
         srcs = srcs,
         hdrs = hdrs,
@@ -88,7 +89,7 @@ def envoy_cc_fuzz_test(
         tags = [],
         **kwargs):
     exec_properties = exec_properties | select({
-        repository + "//bazel:engflow_rbe": {"Pool": rbe_pool} if rbe_pool else {},
+        repository + "//bazel:engflow_rbe_x86_64": {"Pool": rbe_pool} if rbe_pool else {},
         "//conditions:default": {},
     })
     if not (corpus.startswith("//") or corpus.startswith(":") or corpus.startswith("@")):
@@ -113,7 +114,7 @@ def envoy_cc_fuzz_test(
         **kwargs
     )
 
-    native.cc_test(
+    cc_test(
         name = name,
         copts = envoy_copts("@envoy", test = True),
         additional_linker_inputs = envoy_exported_symbols_input(),
@@ -175,10 +176,10 @@ def envoy_cc_test(
         exec_properties = {}):
     coverage_tags = tags + ([] if coverage else ["nocoverage"])
     exec_properties = exec_properties | select({
-        repository + "//bazel:engflow_rbe": {"Pool": rbe_pool} if rbe_pool else {},
+        repository + "//bazel:engflow_rbe_x86_64": {"Pool": rbe_pool} if rbe_pool else {},
         "//conditions:default": {},
     })
-    native.cc_test(
+    cc_test(
         name = name,
         srcs = srcs,
         data = data,
@@ -222,7 +223,7 @@ def envoy_cc_test_library(
         alwayslink = 1,
         **kargs):
     exec_properties = exec_properties | select({
-        repository + "//bazel:engflow_rbe": {"Pool": rbe_pool} if rbe_pool else {},
+        repository + "//bazel:engflow_rbe_x86_64": {"Pool": rbe_pool} if rbe_pool else {},
         "//conditions:default": {},
     })
     disable_pch = kargs.pop("disable_pch", True)
@@ -292,10 +293,10 @@ def envoy_benchmark_test(
         repository = "",
         **kargs):
     exec_properties = exec_properties | select({
-        repository + "//bazel:engflow_rbe": {"Pool": rbe_pool} if rbe_pool else {},
+        repository + "//bazel:engflow_rbe_x86_64": {"Pool": rbe_pool} if rbe_pool else {},
         "//conditions:default": {},
     })
-    native.sh_test(
+    sh_test(
         name = name,
         srcs = [repository + "//bazel:test_for_benchmark_wrapper.sh"],
         data = [":" + benchmark_binary] + data,
@@ -363,7 +364,7 @@ def envoy_sh_test(
         )
 
     else:
-        native.sh_test(
+        sh_test(
             name = name,
             srcs = ["//bazel:sh_test_wrapper.sh"],
             data = srcs + data + cc_binary,

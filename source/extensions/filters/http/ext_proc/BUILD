@@ -10,15 +10,6 @@ licenses(["notice"])  # Apache 2
 envoy_extension_package()
 
 envoy_cc_library(
-    name = "client_base_interface",
-    hdrs = ["client_base.h"],
-    tags = ["skip_on_windows"],
-    deps = [
-        "@envoy_api//envoy/service/ext_proc/v3:pkg_cc_proto",
-    ],
-)
-
-envoy_cc_library(
     name = "ext_proc",
     srcs = [
         "ext_proc.cc",
@@ -30,11 +21,11 @@ envoy_cc_library(
     ],
     tags = ["skip_on_windows"],
     deps = [
-        ":client_base_interface",
-        ":client_interface",
+        ":client_lib",
         ":matching_utils_lib",
         ":mutation_utils_lib",
         ":on_processing_response_interface",
+        ":processing_request_modifier_interface",
         "//envoy/event:timer_interface",
         "//envoy/http:filter_interface",
         "//envoy/http:header_map_interface",
@@ -56,6 +47,19 @@ envoy_cc_library(
     ],
 )
 
+envoy_cc_library(
+    name = "client_lib",
+    srcs = ["client_impl.cc"],
+    hdrs = ["client_impl.h"],
+    deps = [
+        "//envoy/grpc:async_client_manager_interface",
+        "//source/common/http:sidestream_watermark_lib",
+        "//source/extensions/filters/common/ext_proc:grpc_client_lib",
+        "@envoy_api//envoy/config/core/v3:pkg_cc_proto",
+        "@envoy_api//envoy/service/ext_proc/v3:pkg_cc_proto",
+    ],
+)
+
 envoy_cc_extension(
     name = "config",
     srcs = ["config.cc"],
@@ -67,21 +71,6 @@ envoy_cc_extension(
         "//source/extensions/filters/http/common:factory_base_lib",
         "//source/extensions/filters/http/ext_proc/http_client:http_client_lib",
         "@envoy_api//envoy/extensions/filters/http/ext_proc/v3:pkg_cc_proto",
-    ],
-)
-
-envoy_cc_library(
-    name = "client_interface",
-    hdrs = ["client.h"],
-    tags = ["skip_on_windows"],
-    deps = [
-        ":client_base_interface",
-        "//envoy/grpc:async_client_manager_interface",
-        "//envoy/grpc:status",
-        "//envoy/stream_info:stream_info_interface",
-        "//source/common/http:sidestream_watermark_lib",
-        "@envoy_api//envoy/config/core/v3:pkg_cc_proto",
-        "@envoy_api//envoy/service/ext_proc/v3:pkg_cc_proto",
     ],
 )
 
@@ -128,17 +117,14 @@ envoy_cc_library(
 )
 
 envoy_cc_library(
-    name = "client_lib",
-    srcs = ["client_impl.cc"],
-    hdrs = ["client_impl.h"],
+    name = "processing_request_modifier_interface",
+    hdrs = ["processing_request_modifier.h"],
     tags = ["skip_on_windows"],
     deps = [
-        ":client_interface",
-        "//envoy/grpc:async_client_interface",
-        "//envoy/stats:stats_interface",
-        "//envoy/upstream:cluster_manager_interface",
-        "//source/common/grpc:typed_async_client_lib",
-        "@envoy_api//envoy/config/core/v3:pkg_cc_proto",
+        ":matching_utils_lib",
+        "//envoy/config:typed_config_interface",
+        "//envoy/server:factory_context_interface",
+        "//source/common/protobuf",
         "@envoy_api//envoy/service/ext_proc/v3:pkg_cc_proto",
     ],
 )

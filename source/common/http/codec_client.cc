@@ -71,8 +71,16 @@ void CodecClient::deleteRequest(ActiveRequest& request) {
   }
 }
 
+RequestEncoder& CodecClient::newStream(ResponseDecoderHandlePtr response_decoder_handle) {
+  return enlistAndCreateEncoder(
+      std::make_unique<ActiveRequest>(*this, std::move(response_decoder_handle)));
+}
+
 RequestEncoder& CodecClient::newStream(ResponseDecoder& response_decoder) {
-  ActiveRequestPtr request(new ActiveRequest(*this, response_decoder));
+  return enlistAndCreateEncoder(std::make_unique<ActiveRequest>(*this, response_decoder));
+}
+
+RequestEncoder& CodecClient::enlistAndCreateEncoder(ActiveRequestPtr request) {
   request->setEncoder(codec_->newStream(*request));
   LinkedList::moveIntoList(std::move(request), active_requests_);
 
@@ -176,9 +184,7 @@ void CodecClient::onData(Buffer::Instance& data) {
         !isPrematureResponseError(status) ||
         (!active_requests_.empty() || getPrematureResponseHttpCode(status) != Code::RequestTimeout);
     const bool is_goaway = isGoAwayGracefulCloseError(status);
-    if (not_408 &&
-        (!is_goaway || !Runtime::runtimeFeatureEnabled(
-                           "envoy.reloadable_features.http2_no_protocol_error_upon_clean_close"))) {
+    if (not_408 && !is_goaway) {
       host_->cluster().trafficStats()->upstream_cx_protocol_error_.inc();
       protocol_error_ = true;
     }

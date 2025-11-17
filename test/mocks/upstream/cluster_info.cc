@@ -31,9 +31,10 @@ MockIdleTimeEnabledClusterInfo::~MockIdleTimeEnabledClusterInfo() = default;
 MockUpstreamLocalAddressSelector::MockUpstreamLocalAddressSelector(
     Network::Address::InstanceConstSharedPtr& address)
     : address_(address) {
-  ON_CALL(*this, getUpstreamLocalAddressImpl(_))
+  ON_CALL(*this, getUpstreamLocalAddressImpl(_, _))
       .WillByDefault(
-          Invoke([&](const Network::Address::InstanceConstSharedPtr&) -> UpstreamLocalAddress {
+          Invoke([&](const Network::Address::InstanceConstSharedPtr&,
+                     OptRef<const Network::TransportSocketOptions>) -> UpstreamLocalAddress {
             UpstreamLocalAddress ret;
             ret.address_ = address_;
             ret.socket_options_ = nullptr;
@@ -88,6 +89,10 @@ MockClusterInfo::MockClusterInfo()
   ON_CALL(*this, loadBalancerFactory()).WillByDefault(Invoke([this]() -> TypedLoadBalancerFactory& {
     return *lb_factory_;
   }));
+  ON_CALL(*this, loadBalancerConfig())
+      .WillByDefault(Invoke([this]() -> OptRef<const LoadBalancerConfig> {
+        return makeOptRefFromPtr<LoadBalancerConfig>(typed_lb_config_.get());
+      }));
   ON_CALL(*this, http1Settings()).WillByDefault(ReturnRef(http1_settings_));
   ON_CALL(*this, http2Options()).WillByDefault(ReturnRef(http2_options_));
   ON_CALL(*this, http3Options()).WillByDefault(ReturnRef(http3_options_));
@@ -161,8 +166,6 @@ MockClusterInfo::MockClusterInfo()
   ON_CALL(*this, createFilterChain(_, _))
       .WillByDefault(Invoke([&](Http::FilterChainManager&,
                                 const Http::FilterChainOptions&) -> bool { return false; }));
-  ON_CALL(*this, loadBalancerConfig())
-      .WillByDefault(Return(makeOptRefFromPtr<const LoadBalancerConfig>(nullptr)));
   ON_CALL(*this, makeHeaderValidator(_)).WillByDefault(Invoke([&](Http::Protocol protocol) {
     return header_validator_factory_ ? header_validator_factory_->createClientHeaderValidator(
                                            protocol, codecStats(protocol))
@@ -173,6 +176,7 @@ MockClusterInfo::MockClusterInfo()
         return makeOptRefFromPtr<const Envoy::Orca::LrsReportMetricNames>(
             lrs_report_metric_names_.get());
       }));
+  ON_CALL(*this, shadowPolicies()).WillByDefault(ReturnRef(shadow_policies_));
 }
 
 MockClusterInfo::~MockClusterInfo() = default;

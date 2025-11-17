@@ -18,6 +18,7 @@
 #include "source/common/http/http2/codec_stats.h"
 #include "source/common/http/http3/codec_stats.h"
 #include "source/common/upstream/upstream_impl.h"
+#include "source/extensions/load_balancing_policies/round_robin/round_robin_lb.h"
 
 #include "test/mocks/runtime/mocks.h"
 #include "test/mocks/stats/mocks.h"
@@ -56,7 +57,9 @@ public:
   MockUpstreamLocalAddressSelector(Network::Address::InstanceConstSharedPtr& address);
 
   MOCK_METHOD(UpstreamLocalAddress, getUpstreamLocalAddressImpl,
-              (const Network::Address::InstanceConstSharedPtr& address), (const));
+              (const Network::Address::InstanceConstSharedPtr& address,
+               OptRef<const Network::TransportSocketOptions>),
+              (const));
 
   Network::Address::InstanceConstSharedPtr& address_;
 };
@@ -70,7 +73,7 @@ public:
               (const));
 
   ProtobufTypes::MessagePtr createEmptyConfigProto() override {
-    return std::make_unique<ProtobufWkt::Empty>();
+    return std::make_unique<Protobuf::Empty>();
   }
 
   std::string name() const override { return "mock.upstream.local.address.selector"; }
@@ -121,6 +124,8 @@ public:
   MOCK_METHOD(OptRef<const LoadBalancerConfig>, loadBalancerConfig, (), (const));
   MOCK_METHOD(TypedLoadBalancerFactory&, loadBalancerFactory, (), (const));
   MOCK_METHOD(const envoy::config::cluster::v3::Cluster::CommonLbConfig&, lbConfig, (), (const));
+  MOCK_METHOD(absl::optional<bool>, processHttpForOutlierDetection, (Http::ResponseHeaderMap&),
+              (const));
   MOCK_METHOD(envoy::config::cluster::v3::Cluster::DiscoveryType, type, (), (const));
   MOCK_METHOD(OptRef<const envoy::config::cluster::v3::Cluster::CustomClusterType>, clusterType, (),
               (const));
@@ -129,7 +134,7 @@ public:
   MOCK_METHOD(bool, maintenanceMode, (), (const));
   MOCK_METHOD(uint32_t, maxResponseHeadersCount, (), (const));
   MOCK_METHOD(absl::optional<uint16_t>, maxResponseHeadersKb, (), (const));
-  MOCK_METHOD(uint64_t, maxRequestsPerConnection, (), (const));
+  MOCK_METHOD(uint32_t, maxRequestsPerConnection, (), (const));
   MOCK_METHOD(const std::string&, name, (), (const));
   MOCK_METHOD(const std::string&, observabilityName, (), (const));
   MOCK_METHOD(ResourceManager&, resourceManager, (ResourcePriority priority), (const));
@@ -173,6 +178,7 @@ public:
       OptRef<const envoy::config::cluster::v3::UpstreamConnectionOptions::HappyEyeballsConfig>,
       happyEyeballsConfig, (), (const));
   MOCK_METHOD(OptRef<const std::vector<std::string>>, lrsReportMetricNames, (), (const));
+  MOCK_METHOD(const std::vector<Router::ShadowPolicyPtr>&, shadowPolicies, (), (const));
   ::Envoy::Http::HeaderValidatorStats& codecStats(Http::Protocol protocol) const;
   Http::Http1::CodecStats& http1CodecStats() const override;
   Http::Http2::CodecStats& http2CodecStats() const override;
@@ -186,7 +192,7 @@ public:
   envoy::config::core::v3::Http3ProtocolOptions http3_options_;
   envoy::config::core::v3::HttpProtocolOptions common_http_protocol_options_;
   ProtocolOptionsConfigConstSharedPtr extension_protocol_options_;
-  uint64_t max_requests_per_connection_{};
+  uint32_t max_requests_per_connection_{};
   uint32_t max_response_headers_count_{Http::DEFAULT_MAX_HEADERS_COUNT};
   NiceMock<Stats::MockIsolatedStatsStore> stats_store_;
   ClusterTrafficStatNames traffic_stat_names_;
@@ -223,6 +229,9 @@ public:
   Upstream::TypedLoadBalancerFactory* lb_factory_ =
       Config::Utility::getFactoryByName<Upstream::TypedLoadBalancerFactory>(
           "envoy.load_balancing_policies.round_robin");
+  Upstream::LoadBalancerConfigPtr typed_lb_config_ =
+      std::make_unique<Upstream::TypedRoundRobinLbConfig>(
+          envoy::extensions::load_balancing_policies::round_robin::v3::RoundRobin());
   std::unique_ptr<envoy::config::core::v3::TypedExtensionConfig> upstream_config_;
   Network::ConnectionSocket::OptionsSharedPtr cluster_socket_options_;
   envoy::config::cluster::v3::Cluster::CommonLbConfig lb_config_;
@@ -237,6 +246,7 @@ public:
   absl::optional<envoy::config::cluster::v3::UpstreamConnectionOptions::HappyEyeballsConfig>
       happy_eyeballs_config_;
   const std::unique_ptr<Envoy::Orca::LrsReportMetricNames> lrs_report_metric_names_;
+  std::vector<Router::ShadowPolicyPtr> shadow_policies_;
 };
 
 class MockIdleTimeEnabledClusterInfo : public MockClusterInfo {
