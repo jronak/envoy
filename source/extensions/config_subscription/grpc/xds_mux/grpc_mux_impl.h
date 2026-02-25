@@ -14,6 +14,7 @@
 #include "envoy/config/xds_resources_delegate.h"
 #include "envoy/event/dispatcher.h"
 #include "envoy/grpc/status.h"
+#include "envoy/server/memory.h"
 #include "envoy/service/discovery/v3/discovery.pb.h"
 #include "envoy/upstream/cluster_manager.h"
 
@@ -236,6 +237,7 @@ private:
   // the type_urls. So, while the SubscriptionStates populate every other field of these messages,
   // this one is up to GrpcMux.
   const LocalInfo::LocalInfo& local_info_;
+  Server::MemoryAllocatorManager& allocator_manager_;
   Common::CallbackHandlePtr dynamic_update_callback_handle_;
   CustomConfigValidatorsPtr config_validators_;
   XdsConfigTrackerOptRef xds_config_tracker_;

@@ -44,6 +44,9 @@ public:
   MOCK_METHOD(OverloadManager&, nullOverloadManager, ());
   MOCK_METHOD(bool, shouldBypassOverloadManager, (), (const));
   MemoryAllocatorManager& memoryAllocatorManager() override { return memory_allocator_manager_; }
+  MemoryAllocatorManager& memoryAllocatorManager() const override {
+    return memory_allocator_manager_;
+  }
   MOCK_METHOD(Runtime::Loader&, runtime, ());
   MOCK_METHOD(void, shutdown, ());
   MOCK_METHOD(bool, isShutdown, ());
@@ -101,7 +104,7 @@ public:
   testing::NiceMock<MockListenerManager> listener_manager_;
   testing::NiceMock<MockOverloadManager> overload_manager_;
   testing::NiceMock<MockOverloadManager> null_overload_manager_;
-  testing::NiceMock<MockMemoryAllocatorManager> memory_allocator_manager_;
+  mutable testing::NiceMock<MockMemoryAllocatorManager> memory_allocator_manager_;
   Singleton::ManagerPtr singleton_manager_;
   Grpc::ContextImpl grpc_context_;
   Http::ContextImpl http_context_;

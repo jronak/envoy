@@ -24,6 +24,7 @@
 #include "test/mocks/grpc/mocks.h"
 #include "test/mocks/local_info/mocks.h"
 #include "test/mocks/runtime/mocks.h"
+#include "test/mocks/server/memory.h"
 #include "test/test_common/logging.h"
 #include "test/test_common/resources.h"
 #include "test/test_common/simulated_time_system.h"
@@ -89,7 +90,8 @@ public:
             random_),
         /*target_xds_authority_=*/"",
         /*eds_resources_cache_=*/std::unique_ptr<MockEdsResourcesCache>(eds_resources_cache_),
-        /*skip_subsequent_node_=*/true};
+        /*skip_subsequent_node_=*/true,
+        /*memory_allocator_manager_=*/allocator_manager_};
     grpc_mux_ = std::make_unique<GrpcMuxImpl>(grpc_mux_context);
   }
 
@@ -124,6 +126,7 @@ public:
   NiceMock<Event::MockDispatcher> dispatcher_;
   NiceMock<Random::MockRandomGenerator> random_;
   NiceMock<LocalInfo::MockLocalInfo> local_info_;
+  NiceMock<Server::MockMemoryAllocatorManager> allocator_manager_;
   Grpc::MockAsyncClient* async_client_;
   Grpc::MockAsyncStream async_stream_;
   // Used for tests invoking updateMuxSource().
@@ -1054,7 +1057,8 @@ TEST_P(GrpcMuxImplTest, BadLocalInfoEmptyClusterName) {
           SubscriptionFactory::RetryInitialDelayMs, SubscriptionFactory::RetryMaxDelayMs, random_),
       /*target_xds_authority_=*/"",
       /*eds_resources_cache_=*/nullptr,
-      /*skip_subsequent_node_=*/true};
+      /*skip_subsequent_node_=*/true,
+      /*memory_allocator_manager_=*/allocator_manager_};
   EXPECT_THROW_WITH_MESSAGE(
       (GrpcMuxImpl(grpc_mux_context)), EnvoyException,
       "ads: node 'id' and 'cluster' are required. Set it either in 'node' config or via "
@@ -1081,7 +1085,8 @@ TEST_P(GrpcMuxImplTest, BadLocalInfoEmptyNodeName) {
           SubscriptionFactory::RetryInitialDelayMs, SubscriptionFactory::RetryMaxDelayMs, random_),
       /*target_xds_authority_=*/"",
       /*eds_resources_cache_=*/nullptr,
-      /*skip_subsequent_node_=*/true};
+      /*skip_subsequent_node_=*/true,
+      /*memory_allocator_manager_=*/allocator_manager_};
   EXPECT_THROW_WITH_MESSAGE(
       (GrpcMuxImpl(grpc_mux_context)), EnvoyException,
       "ads: node 'id' and 'cluster' are required. Set it either in 'node' config or via "
@@ -1587,13 +1592,14 @@ TEST(GrpcMuxFactoryTest, InvalidRateLimit) {
   NiceMock<Stats::MockStore> store;
   Stats::MockScope& scope{store.mockScope()};
   NiceMock<LocalInfo::MockLocalInfo> local_info;
+  NiceMock<Server::MockMemoryAllocatorManager> allocator_manager;
   envoy::config::core::v3::ApiConfigSource ads_config;
   ads_config.mutable_rate_limit_settings()->mutable_max_tokens()->set_value(100);
   ads_config.mutable_rate_limit_settings()->mutable_fill_rate()->set_value(
       std::numeric_limits<double>::quiet_NaN());
   EXPECT_THROW(factory->create(std::make_unique<Grpc::MockAsyncClient>(), nullptr, dispatcher,
                                random, scope, ads_config, local_info, nullptr, nullptr,
-                               absl::nullopt, absl::nullopt),
+                               absl::nullopt, absl::nullopt, allocator_manager),
                EnvoyException);
 }
 

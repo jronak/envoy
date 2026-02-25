@@ -89,6 +89,7 @@ envoy_cc_library(
         ":custom_config_validators_interface",
         ":subscription_interface",
         "//envoy/common:backoff_strategy_interface",
+        "//envoy/server:memory_interface",
         "@envoy_api//envoy/config/core/v3:pkg_cc_proto",
         "@xds//xds/core/v3:pkg_cc_proto",
     ],

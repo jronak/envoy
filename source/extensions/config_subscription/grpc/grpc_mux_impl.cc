@@ -4,7 +4,6 @@
 
 #include "source/common/config/decoded_resource_impl.h"
 #include "source/common/config/utility.h"
-#include "source/common/memory/utils.h"
 #include "source/common/protobuf/protobuf.h"
 #include "source/extensions/config_subscription/grpc/eds_resources_cache_impl.h"
 #include "source/extensions/config_subscription/grpc/xds_source_id.h"
@@ -67,6 +66,7 @@ GrpcMuxImpl::GrpcMuxImpl(GrpcMuxContext& grpc_mux_context)
                                           std::move(grpc_mux_context.backoff_strategy_),
                                           grpc_mux_context.rate_limit_settings_)),
       local_info_(grpc_mux_context.local_info_),
+      allocator_manager_(grpc_mux_context.memory_allocator_manager_),
       skip_subsequent_node_(grpc_mux_context.skip_subsequent_node_),
       config_validators_(std::move(grpc_mux_context.config_validators_)),
       xds_config_tracker_(grpc_mux_context.xds_config_tracker_),
@@ -556,7 +556,7 @@ void GrpcMuxImpl::processDiscoveryResources(const std::vector<DecodedResourcePtr
   // TODO(mattklein123): In the future if we start tracking per-resource versions, we
   // would do that tracking here.
   api_state.request_.set_version_info(version_info);
-  Memory::Utils::tryShrinkHeap();
+  allocator_manager_.maybeReleaseFreeMemory();
 }
 
 void GrpcMuxImpl::onWriteable() { drainRequests(); }
@@ -665,7 +665,8 @@ public:
          const envoy::config::core::v3::ApiConfigSource& ads_config,
          const LocalInfo::LocalInfo& local_info, CustomConfigValidatorsPtr&& config_validators,
          BackOffStrategyPtr&& backoff_strategy, XdsConfigTrackerOptRef xds_config_tracker,
-         XdsResourcesDelegateOptRef xds_resources_delegate) override {
+         XdsResourcesDelegateOptRef xds_resources_delegate,
+         Server::MemoryAllocatorManager& memory_allocator_manager) override {
     absl::StatusOr<RateLimitSettings> rate_limit_settings_or_error =
         Utility::parseRateLimitSettings(ads_config);
     THROW_IF_NOT_OK_REF(rate_limit_settings_or_error.status());
@@ -685,7 +686,8 @@ public:
         /*backoff_strategy_=*/std::move(backoff_strategy),
         /*target_xds_authority_=*/Config::Utility::getGrpcControlPlane(ads_config).value_or(""),
         /*eds_resources_cache_=*/std::make_unique<EdsResourcesCacheImpl>(dispatcher),
-        /*skip_subsequent_node_=*/ads_config.set_node_on_first_message_only()};
+        /*skip_subsequent_node_=*/ads_config.set_node_on_first_message_only(),
+        /*memory_allocator_manager_=*/memory_allocator_manager};
     return std::make_shared<Config::GrpcMuxImpl>(grpc_mux_context);
   }
 };

@@ -8,7 +8,6 @@
 #include "source/common/config/utility.h"
 #include "source/common/config/xds_context_params.h"
 #include "source/common/config/xds_resource.h"
-#include "source/common/memory/utils.h"
 #include "source/common/protobuf/protobuf.h"
 #include "source/common/protobuf/utility.h"
 #include "source/extensions/config_subscription/grpc/eds_resources_cache_impl.h"
@@ -42,6 +41,7 @@ NewGrpcMuxImpl::NewGrpcMuxImpl(GrpcMuxContext& grpc_mux_context)
                                           grpc_mux_context.service_method_, grpc_mux_context.scope_,
                                           std::move(grpc_mux_context.backoff_strategy_),
                                           grpc_mux_context.rate_limit_settings_)),
+      allocator_manager_(grpc_mux_context.memory_allocator_manager_),
       local_info_(grpc_mux_context.local_info_),
       config_validators_(std::move(grpc_mux_context.config_validators_)),
       dynamic_update_callback_handle_(
@@ -187,7 +187,7 @@ void NewGrpcMuxImpl::onDiscoveryResponse(
     xds_config_tracker_->onConfigRejected(*message, ack.error_detail_.message());
   }
   kickOffAck(ack);
-  Memory::Utils::tryShrinkHeap();
+  allocator_manager_.maybeReleaseFreeMemory();
 }
 
 void NewGrpcMuxImpl::onStreamEstablished() {
@@ -472,7 +472,8 @@ public:
          const envoy::config::core::v3::ApiConfigSource& ads_config,
          const LocalInfo::LocalInfo& local_info, CustomConfigValidatorsPtr&& config_validators,
          BackOffStrategyPtr&& backoff_strategy, XdsConfigTrackerOptRef xds_config_tracker,
-         OptRef<XdsResourcesDelegate>) override {
+         OptRef<XdsResourcesDelegate>,
+         Server::MemoryAllocatorManager& memory_allocator_manager) override {
     absl::StatusOr<RateLimitSettings> rate_limit_settings_or_error =
         Utility::parseRateLimitSettings(ads_config);
     THROW_IF_NOT_OK_REF(rate_limit_settings_or_error.status());
@@ -492,7 +493,8 @@ public:
         /*backoff_strategy_=*/std::move(backoff_strategy),
         /*target_xds_authority_=*/"",
         /*eds_resources_cache_=*/std::make_unique<EdsResourcesCacheImpl>(dispatcher),
-        /*skip_subsequent_node_=*/ads_config.set_node_on_first_message_only()};
+        /*skip_subsequent_node_=*/ads_config.set_node_on_first_message_only(),
+        /*memory_allocator_manager_=*/memory_allocator_manager};
     return std::make_shared<Config::NewGrpcMuxImpl>(grpc_mux_context);
   }
 };

@@ -7,6 +7,7 @@
 #include "source/common/config/api_version.h"
 
 #include "test/extensions/config_subscription/grpc/delta_subscription_test_harness.h"
+#include "test/mocks/server/memory.h"
 
 namespace Envoy {
 namespace Config {
@@ -17,7 +18,7 @@ using ::testing::Return;
 class DeltaSubscriptionImplTest : public DeltaSubscriptionTestHarness,
                                   public testing::TestWithParam<LegacyOrUnified> {
 protected:
-  DeltaSubscriptionImplTest() : DeltaSubscriptionTestHarness(GetParam()) {};
+  DeltaSubscriptionImplTest() : DeltaSubscriptionTestHarness(GetParam()){};
 
   // We need to destroy the subscription before the test's destruction, because the subscription's
   // destructor removes its watch from the NewGrpcMuxImpl, and that removal process involves
@@ -153,6 +154,7 @@ TEST_P(DeltaSubscriptionNoGrpcStreamTest, NoGrpcStream) {
   GrpcMuxSharedPtr xds_context;
   auto backoff_strategy = std::make_unique<JitteredExponentialBackOffStrategy>(
       SubscriptionFactory::RetryInitialDelayMs, SubscriptionFactory::RetryMaxDelayMs, random);
+  NiceMock<Server::MockMemoryAllocatorManager> allocator_manager;
 
   GrpcMuxContext grpc_mux_context{
       /*async_client_=*/std::unique_ptr<Grpc::MockAsyncClient>(async_client),
@@ -168,7 +170,8 @@ TEST_P(DeltaSubscriptionNoGrpcStreamTest, NoGrpcStream) {
       /*backoff_strategy_=*/std::move(backoff_strategy),
       /*target_xds_authority_=*/"",
       /*eds_resources_cache_=*/nullptr,
-      /*skip_subsequent_node_=*/false};
+      /*skip_subsequent_node_=*/false,
+      /*memory_allocator_manager_=*/allocator_manager};
   if (GetParam() == LegacyOrUnified::Unified) {
     xds_context = std::make_shared<Config::XdsMux::GrpcMuxDelta>(grpc_mux_context);
   } else {

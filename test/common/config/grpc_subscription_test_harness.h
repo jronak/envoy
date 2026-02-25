@@ -21,6 +21,7 @@
 #include "test/mocks/event/mocks.h"
 #include "test/mocks/grpc/mocks.h"
 #include "test/mocks/local_info/mocks.h"
+#include "test/mocks/server/memory.h"
 #include "test/mocks/upstream/cluster_manager.h"
 #include "test/test_common/resources.h"
 #include "test/test_common/utility.h"
@@ -73,7 +74,8 @@ public:
         /*backoff_strategy_=*/std::move(backoff_strategy),
         /*target_xds_authority_=*/"",
         /*eds_resources_cache_=*/nullptr,
-        /*skip_subsequent_node_=*/true};
+        /*skip_subsequent_node_=*/true,
+        /*memory_allocator_manager_=*/allocator_manager_};
 
     if (should_use_unified_) {
       mux_ = std::make_shared<Config::XdsMux::GrpcMuxSotw>(grpc_mux_context);
@@ -235,6 +237,7 @@ public:
   NiceMock<Upstream::MockClusterManager> cm_;
   Event::MockDispatcher dispatcher_;
   Random::MockRandomGenerator random_;
+  NiceMock<Server::MockMemoryAllocatorManager> allocator_manager_;
   Event::MockTimer* timer_;
   Event::MockTimer* ttl_timer_;
   envoy::config::core::v3::Node node_;

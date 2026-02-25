@@ -48,7 +48,8 @@ GrpcConfigSubscriptionFactory::create(ConfigSubscriptionFactory::SubscriptionDat
       /*backoff_strategy_=*/std::move(backoff_strategy),
       /*target_xds_authority_=*/control_plane_id,
       /*eds_resources_cache_=*/nullptr, // EDS cache is only used for ADS.
-      /*skip_subsequent_node_=*/api_config_source.set_node_on_first_message_only()};
+      /*skip_subsequent_node_=*/api_config_source.set_node_on_first_message_only(),
+      /*memory_allocator_manager_=*/data.server_.memoryAllocatorManager()};
 
   if (Runtime::runtimeFeatureEnabled("envoy.reloadable_features.unified_mux")) {
     mux = std::make_shared<Config::XdsMux::GrpcMuxSotw>(grpc_mux_context);
@@ -97,7 +98,8 @@ DeltaGrpcConfigSubscriptionFactory::create(ConfigSubscriptionFactory::Subscripti
       /*backoff_strategy_=*/std::move(backoff_strategy),
       /*target_xds_authority_=*/"",
       /*eds_resources_cache_=*/nullptr, // EDS cache is only used for ADS.
-      /*skip_subsequent_node_=*/api_config_source.set_node_on_first_message_only()};
+      /*skip_subsequent_node_=*/api_config_source.set_node_on_first_message_only(),
+      /*memory_allocator_manager_=*/data.server_.memoryAllocatorManager()};
 
   if (Runtime::runtimeFeatureEnabled("envoy.reloadable_features.unified_mux")) {
     mux = std::make_shared<Config::XdsMux::GrpcMuxDelta>(grpc_mux_context);

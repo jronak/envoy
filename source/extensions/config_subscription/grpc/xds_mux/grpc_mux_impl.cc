@@ -9,7 +9,6 @@
 #include "source/common/config/utility.h"
 #include "source/common/config/xds_context_params.h"
 #include "source/common/config/xds_resource.h"
-#include "source/common/memory/utils.h"
 #include "source/common/protobuf/protobuf.h"
 #include "source/common/protobuf/utility.h"
 #include "source/extensions/config_subscription/grpc/eds_resources_cache_impl.h"
@@ -49,6 +48,7 @@ GrpcMuxImpl<S, F, RQ, RS>::GrpcMuxImpl(std::unique_ptr<F> subscription_state_fac
       subscription_state_factory_(std::move(subscription_state_factory)),
       skip_subsequent_node_(grpc_mux_context.skip_subsequent_node_),
       local_info_(grpc_mux_context.local_info_),
+      allocator_manager_(grpc_mux_context.memory_allocator_manager_),
       dynamic_update_callback_handle_(
           grpc_mux_context.local_info_.contextProvider().addDynamicContextUpdateCallback(
               [this](absl::string_view resource_type_url) {
@@ -300,7 +300,7 @@ void GrpcMuxImpl<S, F, RQ, RS>::genericHandleResponse(const std::string& type_ur
 
   pausable_ack_queue_.push(sub->second->handleResponse(response_proto));
   trySendDiscoveryRequests();
-  Memory::Utils::tryShrinkHeap();
+  allocator_manager_.maybeReleaseFreeMemory();
 }
 
 template <class S, class F, class RQ, class RS> void GrpcMuxImpl<S, F, RQ, RS>::start() {
@@ -497,7 +497,8 @@ public:
          const envoy::config::core::v3::ApiConfigSource& ads_config,
          const LocalInfo::LocalInfo& local_info, CustomConfigValidatorsPtr&& config_validators,
          BackOffStrategyPtr&& backoff_strategy, XdsConfigTrackerOptRef xds_config_tracker,
-         XdsResourcesDelegateOptRef) override {
+         XdsResourcesDelegateOptRef,
+         Server::MemoryAllocatorManager& memory_allocator_manager) override {
     absl::StatusOr<RateLimitSettings> rate_limit_settings_or_error =
         Utility::parseRateLimitSettings(ads_config);
     THROW_IF_NOT_OK_REF(rate_limit_settings_or_error.status());
@@ -517,7 +518,8 @@ public:
         /*backoff_strategy_=*/std::move(backoff_strategy),
         /*target_xds_authority_=*/"",
         /*eds_resources_cache_=*/std::make_unique<EdsResourcesCacheImpl>(dispatcher),
-        /*skip_subsequent_node_=*/ads_config.set_node_on_first_message_only()};
+        /*skip_subsequent_node_=*/ads_config.set_node_on_first_message_only(),
+        /*memory_allocator_manager_=*/memory_allocator_manager};
     return std::make_shared<GrpcMuxDelta>(grpc_mux_context);
   }
 };
@@ -533,7 +535,8 @@ public:
          const envoy::config::core::v3::ApiConfigSource& ads_config,
          const LocalInfo::LocalInfo& local_info, CustomConfigValidatorsPtr&& config_validators,
          BackOffStrategyPtr&& backoff_strategy, XdsConfigTrackerOptRef xds_config_tracker,
-         XdsResourcesDelegateOptRef) override {
+         XdsResourcesDelegateOptRef,
+         Server::MemoryAllocatorManager& memory_allocator_manager) override {
     absl::StatusOr<RateLimitSettings> rate_limit_settings_or_error =
         Utility::parseRateLimitSettings(ads_config);
     THROW_IF_NOT_OK_REF(rate_limit_settings_or_error.status());
@@ -553,7 +556,8 @@ public:
         /*backoff_strategy_=*/std::move(backoff_strategy),
         /*target_xds_authority_=*/"",
         /*eds_resources_cache_=*/std::make_unique<EdsResourcesCacheImpl>(dispatcher),
-        /*skip_subsequent_node_=*/ads_config.set_node_on_first_message_only()};
+        /*skip_subsequent_node_=*/ads_config.set_node_on_first_message_only(),
+        /*memory_allocator_manager_=*/memory_allocator_manager};
     return std::make_shared<GrpcMuxSotw>(grpc_mux_context);
   }
 };

@@ -27,6 +27,7 @@
 #include "test/mocks/runtime/mocks.h"
 #include "test/mocks/server/admin.h"
 #include "test/mocks/server/instance.h"
+#include "test/mocks/server/memory.h"
 #include "test/mocks/server/options.h"
 #include "test/mocks/ssl/mocks.h"
 #include "test/mocks/upstream/cluster_manager.h"
@@ -68,7 +69,8 @@ public:
         /*backoff_strategy_=*/std::move(backoff_strategy),
         /*target_xds_authority_=*/"",
         /*eds_resources_cache_=*/nullptr,
-        /*skip_subsequent_node_=*/true};
+        /*skip_subsequent_node_=*/true,
+        /*memory_allocator_manager_=*/allocator_manager_};
     if (use_unified_mux_) {
       grpc_mux_ = std::make_shared<Config::XdsMux::GrpcMuxSotw>(grpc_mux_context);
     } else {
@@ -188,6 +190,7 @@ public:
   ProtobufMessage::MockValidationVisitor validation_visitor_;
   Grpc::MockAsyncClient* async_client_;
   Config::CustomConfigValidatorsPtr config_validators_;
+  NiceMock<Server::MockMemoryAllocatorManager> allocator_manager_;
   NiceMock<Grpc::MockAsyncStream> async_stream_;
   Config::GrpcMuxSharedPtr grpc_mux_;
   Config::GrpcSubscriptionImplPtr subscription_;

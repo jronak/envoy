@@ -8,6 +8,7 @@
 #include "envoy/event/dispatcher.h"
 #include "envoy/grpc/async_client.h"
 #include "envoy/local_info/local_info.h"
+#include "envoy/server/memory.h"
 #include "envoy/stats/scope.h"
 
 #include "source/common/config/utility.h"
@@ -31,6 +32,7 @@ struct GrpcMuxContext {
   const std::string& target_xds_authority_;
   EdsResourcesCachePtr eds_resources_cache_;
   bool skip_subsequent_node_;
+  Server::MemoryAllocatorManager& memory_allocator_manager_;
 };
 
 } // namespace Config

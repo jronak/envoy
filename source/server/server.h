@@ -292,6 +292,9 @@ public:
   OverloadManager& overloadManager() override { return *overload_manager_; }
   OverloadManager& nullOverloadManager() override { return *null_overload_manager_; }
   Memory::AllocatorManager& memoryAllocatorManager() override { return *memory_allocator_manager_; }
+  Memory::AllocatorManager& memoryAllocatorManager() const override {
+    return *memory_allocator_manager_;
+  }
   Runtime::Loader& runtime() override;
   void shutdown() override;
   bool isShutdown() final { return shutdown_; }

@@ -8,6 +8,7 @@
 #include "envoy/config/grpc_mux.h"
 #include "envoy/config/subscription.h"
 #include "envoy/config/xds_config_tracker.h"
+#include "envoy/server/memory.h"
 #include "envoy/service/discovery/v3/discovery.pb.h"
 
 #include "source/common/common/logger.h"
@@ -214,6 +215,7 @@ private:
                                       envoy::service::discovery::v3::DeltaDiscoveryResponse>>
       grpc_stream_;
 
+  Server::MemoryAllocatorManager& allocator_manager_;
   const LocalInfo::LocalInfo& local_info_;
   CustomConfigValidatorsPtr config_validators_;
   Common::CallbackHandlePtr dynamic_update_callback_handle_;

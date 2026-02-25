@@ -14,6 +14,7 @@
 #include "envoy/config/xds_resources_delegate.h"
 #include "envoy/event/dispatcher.h"
 #include "envoy/grpc/status.h"
+#include "envoy/server/memory.h"
 #include "envoy/service/discovery/v3/discovery.pb.h"
 #include "envoy/upstream/cluster_manager.h"
 
@@ -288,6 +289,7 @@ private:
                                       envoy::service::discovery::v3::DiscoveryResponse>>
       grpc_stream_;
   const LocalInfo::LocalInfo& local_info_;
+  Server::MemoryAllocatorManager& allocator_manager_;
   const bool skip_subsequent_node_;
   CustomConfigValidatorsPtr config_validators_;
   XdsConfigTrackerOptRef xds_config_tracker_;

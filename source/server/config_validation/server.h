@@ -17,6 +17,7 @@
 #include "source/common/common/random_generator.h"
 #include "source/common/config/xds_manager_impl.h"
 #include "source/common/grpc/common.h"
+#include "source/common/memory/stats.h"
 #include "source/common/network/dns_resolver/dns_factory_util.h"
 #include "source/common/protobuf/message_validator_impl.h"
 #include "source/common/quic/quic_stat_names.h"
@@ -141,6 +142,11 @@ public:
   }
   void setSinkPredicates(std::unique_ptr<Stats::SinkPredicates>&&) override {}
 
+  Memory::AllocatorManager& memoryAllocatorManager() override { return *memory_allocator_manager_; }
+  Memory::AllocatorManager& memoryAllocatorManager() const override {
+    return *memory_allocator_manager_;
+  }
+
   // Server::WorkerFactory
   WorkerPtr createWorker(uint32_t, OverloadManager&, OverloadManager&,
                          const std::string&) override {
@@ -158,12 +164,6 @@ public:
   }
 
 private:
-  class NoopMemoryAllocatorManager : public MemoryAllocatorManager {
-  public:
-    void maybeReleaseFreeMemory() override {}
-    void releaseFreeMemory() override {}
-  };
-
   void initialize(const Options& options,
                   const Network::Address::InstanceConstSharedPtr& local_address,
                   ComponentFactory& component_factory);
@@ -202,7 +202,7 @@ private:
   std::unique_ptr<ListenerManager> listener_manager_;
   std::unique_ptr<OverloadManager> overload_manager_;
   std::unique_ptr<OverloadManager> null_overload_manager_;
-  NoopMemoryAllocatorManager memory_allocator_manager_;
+  std::unique_ptr<Memory::AllocatorManager> memory_allocator_manager_;
   MutexTracer* mutex_tracer_{nullptr};
   Grpc::ContextImpl grpc_context_;
   Http::ContextImpl http_context_;

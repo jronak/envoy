@@ -32,16 +32,6 @@ envoy_cc_library(
 )
 
 envoy_cc_library(
-    name = "utils_lib",
-    srcs = ["utils.cc"],
-    hdrs = ["utils.h"],
-    tcmalloc_dep = 1,
-    deps = [
-        ":stats_lib",
-    ],
-)
-
-envoy_cc_library(
     name = "heap_shrinker_lib",
     srcs = ["heap_shrinker.cc"],
     hdrs = ["heap_shrinker.h"],

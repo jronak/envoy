@@ -156,6 +156,7 @@ public:
    * @return the server's memory allocator manager.
    */
   virtual MemoryAllocatorManager& memoryAllocatorManager() PURE;
+  virtual MemoryAllocatorManager& memoryAllocatorManager() const PURE;
 
   /**
    * @return the server's null overload manager in case we want to skip overloading the server.

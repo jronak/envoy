@@ -67,7 +67,6 @@ envoy_cc_extension(
         "//envoy/grpc:async_client_interface",
         "//source/common/config:xds_context_params_lib",
         "//source/common/config:xds_resource_lib",
-        "//source/common/memory:utils_lib",
         "//source/extensions/config_subscription/grpc:eds_resources_cache_lib",
         "//source/extensions/config_subscription/grpc:grpc_mux_context_lib",
         "//source/extensions/config_subscription/grpc:grpc_mux_failover_lib",
