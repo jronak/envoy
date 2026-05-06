@@ -312,9 +312,9 @@ TEST_P(FilterChainManagerImplTest, CreatedFilterChainFactoryContextHasIndependen
   auto context1 = filter_chain_manager_->createFilterChainFactoryContext(&filter_chain_messages[1]);
 
   // Server as whole is not draining.
-  MockDrainManager not_a_draining_manager;
+  NiceMock<MockDrainManager> not_a_draining_manager;
   EXPECT_CALL(not_a_draining_manager, drainClose).WillRepeatedly(Return(false));
-  Configuration::MockServerFactoryContext mock_server_context;
+  NiceMock<Configuration::MockServerFactoryContext> mock_server_context;
   EXPECT_CALL(mock_server_context, drainManager).WillRepeatedly(ReturnRef(not_a_draining_manager));
   EXPECT_CALL(parent_context_, serverFactoryContext).WillRepeatedly(ReturnRef(mock_server_context));
 
@@ -347,6 +347,185 @@ TEST_P(FilterChainManagerImplTest, DuplicateFilterChainMatchFails) {
             "{\"destination_port\":10000,\"server_names\":[\"example.com\"]}"
 #endif
   );
+}
+
+// Verify that addOnDrainCloseCb registers a callback that fires when startDraining() is called
+// (the in-place filter chain removal path).
+TEST_P(FilterChainManagerImplTest, DrainCallbackFiresOnStartDraining) {
+  envoy::config::listener::v3::FilterChain fc = filter_chain_template_;
+  fc.set_name("fc_drain");
+  auto context = filter_chain_manager_->createFilterChainFactoryContext(&fc);
+
+  // Set up a parent drain decision mock that stores the parent callback.
+  Common::CallbackHandlePtr stored_parent_handle;
+  Network::DrainDecision::DrainCloseCb stored_parent_cb;
+  EXPECT_CALL(parent_context_, drainDecision())
+      .WillRepeatedly(ReturnRef(parent_context_.drain_manager_));
+  EXPECT_CALL(parent_context_.drain_manager_, addOnDrainCloseCb(_, _))
+      .WillOnce([&](Network::DrainDirection,
+                     Network::DrainDecision::DrainCloseCb cb) -> Common::CallbackHandlePtr {
+        stored_parent_cb = std::move(cb);
+        return nullptr;
+      });
+
+  bool callback_fired = false;
+  std::chrono::milliseconds received_delay{0};
+  auto handle = context->drainDecision().addOnDrainCloseCb(
+      Network::DrainDirection::All,
+      [&](std::chrono::milliseconds delay) -> absl::Status {
+        callback_fired = true;
+        received_delay = delay;
+        return absl::OkStatus();
+      });
+
+  EXPECT_FALSE(callback_fired);
+
+  // Trigger in-place filter chain removal path.
+  auto* context_impl = dynamic_cast<PerFilterChainFactoryContextImpl*>(context.get());
+  context_impl->startDraining();
+
+  EXPECT_TRUE(callback_fired);
+  EXPECT_TRUE(context->drainDecision().drainClose(Network::DrainDirection::All));
+}
+
+// Verify that the parent drain callback (listener/server drain path) fires per-FC callbacks.
+TEST_P(FilterChainManagerImplTest, DrainCallbackFiresOnParentDrain) {
+  envoy::config::listener::v3::FilterChain fc = filter_chain_template_;
+  fc.set_name("fc_parent_drain");
+  auto context = filter_chain_manager_->createFilterChainFactoryContext(&fc);
+
+  Network::DrainDecision::DrainCloseCb stored_parent_cb;
+  EXPECT_CALL(parent_context_, drainDecision())
+      .WillRepeatedly(ReturnRef(parent_context_.drain_manager_));
+  EXPECT_CALL(parent_context_.drain_manager_, addOnDrainCloseCb(_, _))
+      .WillOnce([&](Network::DrainDirection,
+                     Network::DrainDecision::DrainCloseCb cb) -> Common::CallbackHandlePtr {
+        stored_parent_cb = std::move(cb);
+        return nullptr;
+      });
+
+  bool callback_fired = false;
+  std::chrono::milliseconds received_delay{0};
+  auto handle = context->drainDecision().addOnDrainCloseCb(
+      Network::DrainDirection::All,
+      [&](std::chrono::milliseconds delay) -> absl::Status {
+        callback_fired = true;
+        received_delay = delay;
+        return absl::OkStatus();
+      });
+
+  EXPECT_FALSE(callback_fired);
+
+  // Simulate the listener/server drain manager firing our parent callback.
+  ASSERT_TRUE(stored_parent_cb != nullptr);
+  EXPECT_TRUE(stored_parent_cb(std::chrono::milliseconds(42)).ok());
+
+  EXPECT_TRUE(callback_fired);
+  EXPECT_EQ(received_delay, std::chrono::milliseconds(42));
+  EXPECT_TRUE(context->drainDecision().drainClose(Network::DrainDirection::All));
+}
+
+// Verify idempotency: startDraining() after parent drain doesn't double-fire callbacks.
+TEST_P(FilterChainManagerImplTest, DrainCallbackIsIdempotent) {
+  envoy::config::listener::v3::FilterChain fc = filter_chain_template_;
+  fc.set_name("fc_idempotent");
+  auto context = filter_chain_manager_->createFilterChainFactoryContext(&fc);
+
+  Network::DrainDecision::DrainCloseCb stored_parent_cb;
+  EXPECT_CALL(parent_context_, drainDecision())
+      .WillRepeatedly(ReturnRef(parent_context_.drain_manager_));
+  EXPECT_CALL(parent_context_.drain_manager_, addOnDrainCloseCb(_, _))
+      .WillOnce([&](Network::DrainDirection,
+                     Network::DrainDecision::DrainCloseCb cb) -> Common::CallbackHandlePtr {
+        stored_parent_cb = std::move(cb);
+        return nullptr;
+      });
+
+  int fire_count = 0;
+  auto handle = context->drainDecision().addOnDrainCloseCb(
+      Network::DrainDirection::All, [&](std::chrono::milliseconds) -> absl::Status {
+        fire_count++;
+        return absl::OkStatus();
+      });
+
+  // First drain via parent callback.
+  ASSERT_TRUE(stored_parent_cb != nullptr);
+  EXPECT_TRUE(stored_parent_cb(std::chrono::milliseconds(10)).ok());
+  EXPECT_EQ(fire_count, 1);
+
+  // Second drain via startDraining should be a no-op.
+  auto* context_impl = dynamic_cast<PerFilterChainFactoryContextImpl*>(context.get());
+  context_impl->startDraining();
+  EXPECT_EQ(fire_count, 1);
+
+  // Third drain via parent callback again should also be a no-op.
+  EXPECT_TRUE(stored_parent_cb(std::chrono::milliseconds(20)).ok());
+  EXPECT_EQ(fire_count, 1);
+}
+
+// Verify that only removed filter chains get drain callbacks during in-place updates,
+// not reused ones.
+TEST_P(FilterChainManagerImplTest, OnlyRemovedFilterChainsGetDrainCallbacks) {
+  std::vector<envoy::config::listener::v3::FilterChain> filter_chain_messages;
+  for (int i = 0; i < 2; i++) {
+    envoy::config::listener::v3::FilterChain new_filter_chain = filter_chain_template_;
+    new_filter_chain.set_name(absl::StrCat("filter_chain_", i));
+    new_filter_chain.mutable_filter_chain_match()->mutable_destination_port()->set_value(10000 + i);
+    filter_chain_messages.push_back(std::move(new_filter_chain));
+  }
+
+  auto filter_chain_0 = std::make_shared<Network::MockFilterChain>();
+  auto filter_chain_1 = std::make_shared<Network::MockFilterChain>();
+  EXPECT_CALL(filter_chain_factory_builder_, buildFilterChain(_, _, _))
+      .WillOnce(Return(filter_chain_0))
+      .WillOnce(Return(filter_chain_1));
+  EXPECT_TRUE(filter_chain_manager_
+                  ->addFilterChains(GetParam() ? &matcher_ : nullptr,
+                                    std::vector<const envoy::config::listener::v3::FilterChain*>{
+                                        &filter_chain_messages[0], &filter_chain_messages[1]},
+                                    nullptr, filter_chain_factory_builder_, *filter_chain_manager_)
+                  .ok());
+
+  // Create a new manager that only keeps filter_chain_0 (reuses it) and drops filter_chain_1.
+  FilterChainManagerImpl new_filter_chain_manager{addresses_, parent_context_, init_manager_,
+                                                  *filter_chain_manager_};
+  EXPECT_CALL(filter_chain_factory_builder_, buildFilterChain(_, _, _)).Times(0);
+  EXPECT_TRUE(new_filter_chain_manager
+                  .addFilterChains(GetParam() ? &matcher_ : nullptr,
+                                   std::vector<const envoy::config::listener::v3::FilterChain*>{
+                                       &filter_chain_messages[0]},
+                                   nullptr, filter_chain_factory_builder_, new_filter_chain_manager)
+                  .ok());
+
+  // Only filter_chain_1 should be in the draining list.
+  ASSERT_EQ(filter_chain_manager_->drainingFilterChains().size(), 1);
+  EXPECT_EQ(filter_chain_manager_->drainingFilterChains()[0], filter_chain_1);
+}
+
+// Verify that addOnDrainCloseCb fires immediately if already draining.
+TEST_P(FilterChainManagerImplTest, DrainCallbackImmediateIfAlreadyDraining) {
+  envoy::config::listener::v3::FilterChain fc = filter_chain_template_;
+  fc.set_name("fc_already_draining");
+  auto context = filter_chain_manager_->createFilterChainFactoryContext(&fc);
+
+  // Start draining first (no callbacks registered yet).
+  auto* context_impl = dynamic_cast<PerFilterChainFactoryContextImpl*>(context.get());
+  context_impl->startDraining();
+
+  // Now register a callback -- it should fire immediately with zero delay.
+  bool callback_fired = false;
+  std::chrono::milliseconds received_delay{999};
+  auto handle = context->drainDecision().addOnDrainCloseCb(
+      Network::DrainDirection::All,
+      [&](std::chrono::milliseconds delay) -> absl::Status {
+        callback_fired = true;
+        received_delay = delay;
+        return absl::OkStatus();
+      });
+
+  EXPECT_TRUE(callback_fired);
+  EXPECT_EQ(received_delay, std::chrono::milliseconds(0));
+  EXPECT_EQ(handle, nullptr);
 }
 
 INSTANTIATE_TEST_SUITE_P(Matcher, FilterChainManagerImplTest, ::testing::Values(true, false));

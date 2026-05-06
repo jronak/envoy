@@ -104,6 +104,7 @@ envoy_cc_library(
         "//envoy/server:instance_interface",
         "//envoy/server:listener_manager_interface",
         "//envoy/server:transport_socket_config_interface",
+        "//source/common/common:callback_impl_lib",
         "//source/common/common:empty_string",
         "//source/common/config:utility_lib",
         "//source/common/init:manager_lib",

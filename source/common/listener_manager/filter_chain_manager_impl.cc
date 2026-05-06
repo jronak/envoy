@@ -84,6 +84,51 @@ bool PerFilterChainFactoryContextImpl::drainClose(Network::DrainDirection scope)
   return is_draining_.load() || parent_context_.drainDecision().drainClose(scope);
 }
 
+Common::CallbackHandlePtr PerFilterChainFactoryContextImpl::addOnDrainCloseCb(
+    Network::DrainDirection /*direction*/, DrainCloseCb cb) const {
+  if (is_draining_.load()) {
+    THROW_IF_NOT_OK(cb(std::chrono::milliseconds(0)));
+    return nullptr;
+  }
+
+  // On first callback registration, wire up a parent drain callback so that
+  // listener-level and server-level drain cascades reach this filter chain.
+  if (parent_drain_cb_handle_ == nullptr) {
+    parent_drain_cb_handle_ = parent_context_.drainDecision().addOnDrainCloseCb(
+        Network::DrainDirection::All,
+        [this](std::chrono::milliseconds delay) -> absl::Status {
+          if (!is_draining_.exchange(true)) {
+            return runDrainCallbacks(delay);
+          }
+          return absl::OkStatus();
+        });
+  }
+
+  return drain_cbs_.add(std::move(cb));
+}
+
+void PerFilterChainFactoryContextImpl::startDraining() {
+  if (is_draining_.exchange(true)) {
+    return;
+  }
+  THROW_IF_NOT_OK(runDrainCallbacks(randomDrainDelay()));
+}
+
+std::chrono::milliseconds PerFilterChainFactoryContextImpl::randomDrainDelay() const {
+  const auto drain_time = parent_context_.serverFactoryContext().options().drainTime();
+  const auto drain_ms = std::chrono::duration_cast<std::chrono::milliseconds>(drain_time);
+  if (drain_ms.count() <= 0) {
+    return std::chrono::milliseconds(0);
+  }
+  return std::chrono::milliseconds(
+      parent_context_.serverFactoryContext().api().randomGenerator().random() % drain_ms.count());
+}
+
+absl::Status
+PerFilterChainFactoryContextImpl::runDrainCallbacks(std::chrono::milliseconds delay) const {
+  return drain_cbs_.runCallbacks(delay);
+}
+
 Network::DrainDecision& PerFilterChainFactoryContextImpl::drainDecision() { return *this; }
 
 Init::Manager& PerFilterChainFactoryContextImpl::initManager() { return init_manager_; }

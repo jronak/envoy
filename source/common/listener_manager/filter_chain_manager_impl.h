@@ -16,6 +16,7 @@
 #include "envoy/server/transport_socket_config.h"
 #include "envoy/thread_local/thread_local.h"
 
+#include "source/common/common/callback_impl.h"
 #include "source/common/common/logger.h"
 #include "source/common/config/metadata.h"
 #include "source/common/init/manager_impl.h"
@@ -54,11 +55,8 @@ public:
 
   // DrainDecision
   bool drainClose(Network::DrainDirection) const override;
-  Common::CallbackHandlePtr addOnDrainCloseCb(Network::DrainDirection,
-                                              DrainCloseCb) const override {
-    IS_ENVOY_BUG("Unexpected function call");
-    return nullptr;
-  }
+  Common::CallbackHandlePtr addOnDrainCloseCb(Network::DrainDirection direction,
+                                              DrainCloseCb cb) const override;
 
   // Configuration::FactoryContext
   Network::DrainDecision& drainDecision() override;
@@ -69,16 +67,21 @@ public:
   Configuration::ServerFactoryContext& serverFactoryContext() override;
   Stats::Scope& listenerScope() override;
 
-  void startDraining() override { is_draining_.store(true); }
+  void startDraining() override;
 
 private:
+  absl::Status runDrainCallbacks(std::chrono::milliseconds delay) const;
+  std::chrono::milliseconds randomDrainDelay() const;
+
   Configuration::FactoryContext& parent_context_;
   // The scope that has empty prefix.
   Stats::ScopeSharedPtr scope_;
   // filter_chain_scope_ has the same prefix as listener owners scope.
   Stats::ScopeSharedPtr filter_chain_scope_;
   Init::Manager& init_manager_;
-  std::atomic<bool> is_draining_{false};
+  mutable std::atomic<bool> is_draining_{false};
+  mutable Common::CallbackManager<absl::Status, std::chrono::milliseconds> drain_cbs_;
+  mutable Common::CallbackHandlePtr parent_drain_cb_handle_;
 };
 
 using FilterChainActionFactoryContext = Configuration::ServerFactoryContext;

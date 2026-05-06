@@ -34,7 +34,7 @@
 
 #include "source/common/listener_manager/filter_chain_manager_impl.h"
 #include "source/server/configuration_impl.h"
-#include "source/server/drain_manager_impl.h"
+#include "envoy/server/drain_manager.h"
 #include "source/server/transport_socket_config_impl.h"
 
 namespace Envoy {
@@ -396,7 +396,7 @@ absl::StatusOr<Network::SocketSharedPtr> ProdListenerComponentFactory::createLis
 
 DrainManagerPtr ProdListenerComponentFactory::createDrainManager(
     envoy::config::listener::v3::Listener::DrainType drain_type) {
-  return DrainManagerPtr{new DrainManagerImpl(server_, drain_type, server_.dispatcher())};
+  return server_.drainManager().createChildManager(server_.dispatcher(), drain_type);
 }
 
 DrainingFilterChainsManager::DrainingFilterChainsManager(ListenerImplPtr&& draining_listener,
