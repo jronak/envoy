@@ -1770,7 +1770,6 @@ filter_chains:
   )EOF";
 
   ListenerHandle* listener_foo_update1 = expectListenerOverridden(false);
-  EXPECT_CALL(*listener_factory_.socket_, duplicate());
   EXPECT_CALL(*worker_, addListener(_, _, _, _, _));
   auto* timer = new Event::MockTimer(dynamic_cast<Event::MockDispatcher*>(&server_.dispatcher()));
   EXPECT_CALL(*timer, enableTimer(_, _));
@@ -7839,7 +7838,6 @@ filter_chains:
   )EOF";
 
   ListenerHandle* listener_foo_update1 = expectListenerOverridden(true);
-  EXPECT_CALL(*listener_factory_.socket_, duplicate());
   EXPECT_CALL(listener_foo_update1->target_, initialize());
   EXPECT_TRUE(addOrUpdateListener(parseListenerFromV3Yaml(listener_foo_update1_yaml)));
   EXPECT_EQ(1, server_.stats_store_.counter("listener_manager.listener_in_place_updated").value());
@@ -7847,9 +7845,10 @@ filter_chains:
   EXPECT_EQ(1UL, manager_->listeners().size());
 
   // Stop foo which should remove warming listener.
+  // Socket factories were moved to the warming listener, so close() happens during its
+  // destruction, not via maybeCloseSocketsForListener on the active listener.
   EXPECT_CALL(*listener_foo_update1, onDestroy());
   EXPECT_CALL(*worker_, stopListener(_, _, _));
-  EXPECT_CALL(*listener_factory_.socket_, close());
   EXPECT_CALL(*listener_foo, onDestroy());
   manager_->stopListeners(ListenerManager::StopListenersType::InboundOnly, {});
   EXPECT_EQ(1, server_.stats_store_.counter("listener_manager.listener_stopped").value());
@@ -7900,7 +7899,6 @@ filter_chains:
   )EOF";
 
   ListenerHandle* listener_foo_update1 = expectListenerOverridden(true);
-  EXPECT_CALL(*listener_factory_.socket_, duplicate());
   EXPECT_CALL(listener_foo_update1->target_, initialize());
   EXPECT_TRUE(addOrUpdateListener(parseListenerFromV3Yaml(listener_foo_update1_yaml)));
   EXPECT_EQ(1, server_.stats_store_.counter("listener_manager.listener_in_place_updated").value());
@@ -7909,9 +7907,10 @@ filter_chains:
   checkStats(__LINE__, 1, 1, 0, 1, 1, 0, 0);
 
   // Remove foo which should remove both warming and active.
+  // Socket factories were moved to the warming listener during in-place update,
+  // so close() is not explicitly called on the active listener.
   EXPECT_CALL(*listener_foo_update1, onDestroy());
   EXPECT_CALL(*worker_, stopListener(_, _, _));
-  EXPECT_CALL(*listener_factory_.socket_, close());
   EXPECT_CALL(*listener_foo->drain_manager_, startDrainSequence(Network::DrainDirection::All, _));
   EXPECT_TRUE(manager_->removeListener("foo"));
   checkStats(__LINE__, 1, 1, 1, 0, 0, 1, 0);
@@ -7969,7 +7968,6 @@ filter_chains:
   )EOF";
 
   ListenerHandle* listener_foo_update1 = expectListenerOverridden(true);
-  EXPECT_CALL(*listener_factory_.socket_, duplicate());
   EXPECT_CALL(listener_foo_update1->target_, initialize());
   EXPECT_TRUE(addOrUpdateListener(parseListenerFromV3Yaml(listener_foo_update1_yaml)));
   EXPECT_EQ(1, server_.stats_store_.counter("listener_manager.listener_in_place_updated").value());
@@ -8030,9 +8028,6 @@ filter_chains:
   )EOF");
 
   ListenerHandle* listener_foo_update1 = expectListenerOverridden(true, listener_foo);
-  auto duplicated_socket = new NiceMock<Network::MockListenSocket>();
-  EXPECT_CALL(*listener_factory_.socket_, duplicate())
-      .WillOnce(Return(ByMove(std::unique_ptr<Network::Socket>(duplicated_socket))));
   EXPECT_CALL(listener_foo_update1->target_, initialize());
   EXPECT_TRUE(addOrUpdateListener(listener_foo_update1_proto));
   EXPECT_EQ(1UL, manager_->listeners().size());
@@ -8053,12 +8048,13 @@ filter_chains:
   listener_foo_update2_proto.set_traffic_direction(
       ::envoy::config::core::v3::TrafficDirection::OUTBOUND);
   ListenerHandle* listener_foo_update2 = expectListenerCreate(false, true);
-  auto duplicated_socket2 =
-      expectUpdateToThenDrain(listener_foo_update2_proto, listener_foo_update1, *duplicated_socket);
+  // Full update: duplicates from the original socket (held by listener_foo_update1 via move).
+  auto duplicated_socket = expectUpdateToThenDrain(listener_foo_update2_proto, listener_foo_update1,
+                                                   *listener_factory_.socket_);
   // Bump modified.
   checkStats(__LINE__, 1, 2, 0, 0, 1, 0, 1);
 
-  expectRemove(listener_foo_update2_proto, listener_foo_update2, *duplicated_socket2);
+  expectRemove(listener_foo_update2_proto, listener_foo_update2, *duplicated_socket);
   // Bump removed and sub active.
   checkStats(__LINE__, 1, 2, 1, 0, 0, 0, 1);
 
@@ -8116,7 +8112,6 @@ filter_chains:
   )EOF";
 
   ListenerHandle* listener_foo_update1 = expectListenerOverridden(true);
-  EXPECT_CALL(*listener_factory_.socket_, duplicate());
   EXPECT_CALL(listener_foo_update1->target_, initialize());
   EXPECT_TRUE(addOrUpdateListener(parseListenerFromV3Yaml(listener_foo_update1_yaml)));
   EXPECT_EQ(1UL, manager_->listeners().size());
@@ -8188,7 +8183,6 @@ filter_chains:
   )EOF";
 
   ListenerHandle* listener_foo_update1 = expectListenerOverridden(true);
-  EXPECT_CALL(*listener_factory_.socket_, duplicate());
   EXPECT_CALL(listener_foo_update1->target_, initialize());
   EXPECT_TRUE(addOrUpdateListener(parseListenerFromV3Yaml(listener_foo_update1_yaml)));
   EXPECT_EQ(1UL, manager_->listeners().size());
@@ -8248,7 +8242,6 @@ filter_chains:
   )EOF";
 
   ListenerHandle* listener_foo_update1 = expectListenerOverridden(true, listener_foo);
-  EXPECT_CALL(*listener_factory_.socket_, duplicate());
   EXPECT_CALL(listener_foo_update1->target_, initialize());
   EXPECT_TRUE(addOrUpdateListener(parseListenerFromV3Yaml(listener_foo_update1_yaml)));
   EXPECT_EQ(1UL, manager_->listeners().size());
@@ -8285,14 +8278,15 @@ filter_chains:
   worker_->callRemovalCompletion();
 
   // The snapshot of the listener manager is
-  // 1) listener_foo is draining filter chain. The listen socket is open.
-  // 2) No listen is active. Note that listener_foo_update1 is stopped.
+  // 1) listener_foo is draining filter chain with empty socket factories (moved during in-place
+  //    update).
+  // 2) listener_foo_update1 has been fully drained and removed from draining_listeners_.
+  // 3) No listener is active.
   //
-  // The next step is to add a listener on the same socket address and the listen socket of
-  // listener_foo will be duplicated.
+  // Since the draining filter chain entry has empty socket factories (moved during in-place
+  // update) and draining_listeners_ is empty, a new socket must be created.
   auto listener_foo_expect_reuse_socket = expectListenerCreate(true, true);
-  EXPECT_CALL(listener_factory_, createListenSocket(_, _, _, _, _, _)).Times(0);
-  EXPECT_CALL(*listener_factory_.socket_, duplicate());
+  EXPECT_CALL(listener_factory_, createListenSocket(_, _, _, default_bind_type, _, 0));
   EXPECT_CALL(listener_foo_expect_reuse_socket->target_, initialize());
   EXPECT_TRUE(addOrUpdateListener(parseListenerFromV3Yaml(listener_foo_yaml), "version1", true));
 
@@ -8354,7 +8348,6 @@ filter_chains:
   )EOF";
 
   ListenerHandle* listener_foo_update1 = expectListenerOverridden(true, listener_foo);
-  EXPECT_CALL(*listener_factory_.socket_, duplicate()).Times(2);
   EXPECT_CALL(listener_foo_update1->target_, initialize());
   EXPECT_TRUE(addOrUpdateListener(parseListenerFromV3Yaml(listener_foo_update1_yaml)));
   EXPECT_EQ(1UL, manager_->listeners().size());
@@ -8391,14 +8384,15 @@ filter_chains:
   worker_->callRemovalCompletion();
 
   // The snapshot of the listener manager is
-  // 1) listener_foo is draining filter chain. The listen socket is open.
-  // 2) No listen is active. Note that listener_foo_update1 is stopped.
+  // 1) listener_foo is draining filter chain with empty socket factories (moved during in-place
+  //    update).
+  // 2) listener_foo_update1 has been fully drained and removed from draining_listeners_.
+  // 3) No listener is active.
   //
-  // The next step is to add a listener on the same socket address and the listen socket of
-  // listener_foo will be duplicated.
+  // Since the draining filter chain entry has empty socket factories (moved during in-place
+  // update) and draining_listeners_ is empty, new sockets must be created.
   auto listener_foo_expect_reuse_socket = expectListenerCreate(true, true);
-  EXPECT_CALL(listener_factory_, createListenSocket(_, _, _, _, _, _)).Times(0);
-  EXPECT_CALL(*listener_factory_.socket_, duplicate()).Times(2);
+  EXPECT_CALL(listener_factory_, createListenSocket(_, _, _, default_bind_type, _, 0)).Times(2);
   EXPECT_CALL(listener_foo_expect_reuse_socket->target_, initialize());
   EXPECT_TRUE(addOrUpdateListener(parseListenerFromV3Yaml(listener_foo_yaml), "version1", true));
 
@@ -9313,7 +9307,6 @@ filter_chains:
   )EOF";
 
   ListenerHandle* listener_foo_update1 = expectListenerOverridden(false);
-  EXPECT_CALL(*listener_factory_.socket_, duplicate());
   EXPECT_CALL(*worker_, addListener(_, _, _, _, _));
   auto* timer = new Event::MockTimer(dynamic_cast<Event::MockDispatcher*>(&server_.dispatcher()));
   EXPECT_CALL(*timer, enableTimer(_, _));

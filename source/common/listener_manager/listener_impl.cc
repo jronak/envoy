@@ -1263,6 +1263,11 @@ absl::Status ListenerImpl::cloneSocketFactoryFrom(const ListenerImpl& other) {
   return absl::OkStatus();
 }
 
+absl::Status ListenerImpl::moveSocketFactoryFrom(ListenerImpl& other) {
+  socket_factories_ = std::move(other.socket_factories_);
+  return absl::OkStatus();
+}
+
 void ListenerImpl::closeAllSockets() {
   for (auto& socket_factory : socket_factories_) {
     socket_factory->closeAllSockets();

@@ -628,9 +628,11 @@ absl::StatusOr<bool> ListenerManagerImpl::addOrUpdateListenerInternal(
 
   ListenerImplPtr new_listener = nullptr;
 
+  bool in_place_update = false;
   // In place filter chain update depends on the active listener at worker.
   if (existing_active_listener != active_listeners_.end() &&
       (*existing_active_listener)->supportUpdateFilterChain(config, workers_started_)) {
+    in_place_update = true;
     ENVOY_LOG(debug, "use in place update filter chain update path for listener name={} hash={}",
               name, hash);
     auto listener_or_error =
@@ -652,11 +654,19 @@ absl::StatusOr<bool> ListenerManagerImpl::addOrUpdateListenerInternal(
   if (existing_warming_listener != warming_listeners_.end()) {
     ASSERT(workers_started_);
     new_listener->debugLog("update warming listener");
-    RETURN_IF_NOT_OK(setupSocketFactoryForListener(*new_listener, **existing_warming_listener));
+    if (in_place_update) {
+      RETURN_IF_NOT_OK(new_listener->moveSocketFactoryFrom(**existing_warming_listener));
+    } else {
+      RETURN_IF_NOT_OK(setupSocketFactoryForListener(*new_listener, **existing_warming_listener));
+    }
     // In this case we can just replace inline.
     *existing_warming_listener = std::move(new_listener);
   } else if (existing_active_listener != active_listeners_.end()) {
-    RETURN_IF_NOT_OK(setupSocketFactoryForListener(*new_listener, **existing_active_listener));
+    if (in_place_update) {
+      RETURN_IF_NOT_OK(new_listener->moveSocketFactoryFrom(**existing_active_listener));
+    } else {
+      RETURN_IF_NOT_OK(setupSocketFactoryForListener(*new_listener, **existing_active_listener));
+    }
     // In this case we have no warming listener, so what we do depends on whether workers
     // have been started or not.
     if (workers_started_) {
@@ -1256,7 +1266,8 @@ absl::Status ListenerManagerImpl::setNewOrDrainingSocketFactory(const std::strin
     auto existing_draining_filter_chain = std::find_if(
         draining_filter_chains_manager_.cbegin(), draining_filter_chains_manager_.cend(),
         [&listener](const DrainingFilterChainsManager& draining_filter_chain) {
-          return draining_filter_chain.getDrainingListener()
+          return !draining_filter_chain.getDrainingListener().listenSocketFactories().empty() &&
+                 draining_filter_chain.getDrainingListener()
                      .listenSocketFactories()[0]
                      ->getListenSocket(0)
                      ->isOpen() &&

@@ -67,6 +67,13 @@ bug_fixes:
     resulting binary "plaintext" was written back into the ``Cookie:`` request header and tripped a
     ``HeaderString`` validation assert. Such plaintexts are now rejected and the original cookie value
     is preserved, matching the behavior already documented for the explicit decryption-failure case.
+- area: listener
+  change: |
+    Fixed a file descriptor leak during in-place filter chain updates. Each in-place update was
+    cloning the listener socket factory via ``dup()``, doubling the listen socket FD count per
+    update because workers continue to use their existing sockets. Socket factories are now moved
+    from the previous listener to the new one during in-place updates instead of cloned. Full
+    listener updates continue to clone as before.
 
 removed_config_or_runtime:
 # *Normally occurs at the end of the* :ref:`deprecation period <deprecated>`

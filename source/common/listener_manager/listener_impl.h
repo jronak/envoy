@@ -344,6 +344,7 @@ public:
   }
 
   absl::Status cloneSocketFactoryFrom(const ListenerImpl& other);
+  absl::Status moveSocketFactoryFrom(ListenerImpl& other);
   void closeAllSockets();
 
   Network::Socket::Type socketType() const { return socket_type_; }
